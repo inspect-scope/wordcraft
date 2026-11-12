@@ -1672,6 +1672,19 @@ fn point_row_total(t: &Table, columns: usize) -> Option<f32> {
     if t.props.fixed || !t.props.width_pct.is_some_and(|p| p.is_finite() && p > 0.0) {
         return None;
     }
+    point_rows_total(t, columns)
+}
+
+// An autofit table's complete point-width rows outrank a stale grid of another total, as in Word.
+fn stale_grid_total(t: &Table, columns: usize, grid_total: f32) -> Option<f32> {
+    const WIDTH_EPSILON: f32 = 0.01;
+    if t.props.fixed {
+        return None;
+    }
+    point_rows_total(t, columns).filter(|total| (total - grid_total).abs() > WIDTH_EPSILON)
+}
+
+fn point_rows_total(t: &Table, columns: usize) -> Option<f32> {
     for row in &t.rows {
         if row.first_grid() != 0
             || row.props.grid_after != 0
@@ -1779,7 +1792,7 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
     if grid.is_empty() || !total.is_finite() {
         return;
     }
-    let total = point_row_total(t, grid.len()).unwrap_or(total);
+    let total = point_row_total(t, grid.len()).or_else(|| stale_grid_total(t, grid.len(), total)).unwrap_or(total);
     let mut edges = vec![None; grid.len() + 1];
     edges[0] = Some(0.0);
     edges[grid.len()] = Some(total);
@@ -1939,6 +1952,20 @@ mod cell_width_tests {
         let mut grid = table.grid.clone();
         apply_cell_widths(&table, &mut grid);
         assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    #[test]
+    fn rows_outrank_grid_total() {
+        let mut table = merged_width_table();
+        table.grid = vec![100.0, 200.0, 250.0, 100.0];
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+
+        table.props.fixed = true;
+        grid.copy_from_slice(&table.grid);
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [100.0, 200.0, 250.0, 100.0], "a fixed table keeps its grid");
     }
 
     #[test]
