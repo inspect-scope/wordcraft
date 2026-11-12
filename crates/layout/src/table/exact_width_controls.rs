@@ -327,14 +327,13 @@ fn exact_pair_rejects_faults() {
     }
 }
 
+// Word sizes an autofit table whose width matches its rows from the rows, not a stale grid.
 #[test]
-fn ordinary_table_keeps_grid() {
+fn ordinary_table_takes_row_widths() {
     let mut table = paired_table();
     table.rows[0].cells[0].blocks.remove(HEADER_BLOCK);
-    let target = PARENT_WIDTHS.iter().sum::<f32>();
-    let scale = target / PARENT_GRID.iter().sum::<f32>();
     let layout = laid(table);
-    assert_widths(&cell_widths(&layout, &[0], 1), &PARENT_GRID.map(|w| w * scale));
+    assert_widths(&cell_widths(&layout, &[0], 1), &PARENT_WIDTHS);
 }
 
 #[test]
