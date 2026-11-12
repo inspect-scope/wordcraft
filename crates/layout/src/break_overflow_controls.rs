@@ -105,15 +105,12 @@ fn witness(lead: Lead, text: &str) -> Document {
     document(lead, height, text)
 }
 
-/// Measured in Word: a paragraph of nothing but a page break that doesn't fit at the foot of
-/// a page moves on with its break, leaving a blank landscape page before the portrait one.
-fn assert_blank_transition(doc: &Document, laid: &DocLayout, break_at: usize) {
+fn assert_transition(doc: &Document, laid: &DocLayout) {
     let landscape: Vec<_> = laid.pages.iter().map(|p| p.w > p.h).collect();
-    assert_eq!(landscape, [true, true, false, true]);
-    assert_eq!(laid.caret(&Pos::body(1, break_at)).unwrap().page, 1, "the break line moves on");
-    assert_eq!(laid.caret(&Pos::body(3, 0)).unwrap().page, 2);
-    assert_eq!(laid.caret(&Pos::body(4, 0)).unwrap().page, 3);
-    assert_eq!(laid.pages.iter().map(|p| p.number).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    assert_eq!(landscape, [true, false, true], "retain one intentional portrait page without an extra landscape blank");
+    assert_eq!(laid.caret(&Pos::body(4, 0)).unwrap().page, 2);
+    assert_eq!(laid.caret(&Pos::body(3, 0)).unwrap().page, 1);
+    assert_eq!(laid.pages.iter().map(|p| p.number).collect::<Vec<_>>(), [1, 2, 3]);
     for text in ["Anchor", "After"] {
         let count = laid
             .pages
@@ -136,14 +133,14 @@ fn table_soft_then_page_break() {
     let doc = witness(Lead::Table, "\n\u{000C}");
     let original = doc.clone();
     let laid = lay(&doc);
-    assert_blank_transition(&doc, &laid, 1);
+    assert_transition(&doc, &laid);
     assert_eq!(doc, original, "layout must not change the source");
 }
 
 #[test]
 fn para_soft_then_page_break() {
     let doc = witness(Lead::Paragraph, "\n\u{000C}");
-    assert_blank_transition(&doc, &lay(&doc), 1);
+    assert_transition(&doc, &lay(&doc));
 }
 
 #[test]
@@ -192,10 +189,14 @@ fn note_line_is_not_pure_break() {
     assert_eq!(note_pages, [1]);
 }
 
+/// Measured in Word: a paragraph of nothing but a page break that can't start on a full page
+/// moves on, leaving a blank landscape page before the portrait one.
 #[test]
 fn full_page_pure_break_moves() {
     let doc = document(Lead::Table, section(Paper::Landscape).text_height(), "\u{000C}");
-    assert_blank_transition(&doc, &lay(&doc), 0);
+    let laid = lay(&doc);
+    assert_eq!(laid.pages.iter().map(|p| p.w > p.h).collect::<Vec<_>>(), [true, true, false, true]);
+    assert_eq!(laid.caret(&Pos::body(1, 0)).unwrap().page, 1);
 }
 
 #[test]
@@ -219,10 +220,7 @@ fn parity_and_restart_stay() {
         let roomy = lay(&roomy);
         let tight = lay(&tight);
         let summary = |l: &DocLayout| l.pages.iter().map(|p| (p.w, p.h, p.number, p.section)).collect::<Vec<_>>();
-        // The tight break line moves on: one blank landscape page more (measured in Word).
-        let (tight_pages, roomy_pages) = (summary(&tight), summary(&roomy));
-        assert_eq!(tight_pages.len(), roomy_pages.len() + 1, "section start {start:?}");
-        assert_eq!(tight_pages.last().map(|p| (p.0, p.1, p.3)), roomy_pages.last().map(|p| (p.0, p.1, p.3)), "section start {start:?}");
+        assert_eq!(summary(&tight), summary(&roomy), "section start {start:?}");
         let last = tight.pages.last().unwrap();
         let number = if start == SectionStart::EvenPage { 8 } else { 7 };
         assert_eq!(last.number, number, "even-page starts advance an odd restart to the next even number");

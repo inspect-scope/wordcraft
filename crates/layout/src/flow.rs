@@ -503,9 +503,10 @@ impl<'a> Flow<'a> {
             };
             let over = bottom + tail > limit + 0.01;
             let split = bottom > limit + 0.01 && notes_split(pb, (&fit.notes, &line_notes), bottom);
-            // Measured in Word: a page break with text after it stays at the foot of a full page,
-            // but a paragraph of nothing but the break moves on and leaves a blank page.
-            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || (free && !self.ends_with(fit.l1)));
+            // Measured in Word: a paragraph of nothing but a page break that can't start on the
+            // page moves on and leaves a blank page; a break line within or before text stays.
+            let starts_blank = fit.l1 == l0 && self.ends_with(fit.l1);
+            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || (free && !starts_blank));
             if over && fit.l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
                 break;
             }
