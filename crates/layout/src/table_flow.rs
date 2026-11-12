@@ -345,13 +345,17 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
     for attempt in 0..=advances {
         let s = pb.sect;
         let h_area = float_table_h_area(pb, f, ctx.mirror);
-        // The text a table anchored to it stands in: where the next paragraph starts.
+        let x = float_table_x(pb, w, f, legacy, ctx.mirror);
+        // The text a table anchored to it stands in: where the next paragraph starts, below a
+        // wrapping object in the table's way.
         let v_area = match f.v_rel {
             Anchor::Page => (0.0, s.page_h),
             Anchor::Margin => (s.margin_top, s.text_height()),
-            _ => (pb.y, 0.0),
+            _ => {
+                let objects: Vec<WrapArea> = pb.wrap_areas().into_iter().filter(|(.., table)| !table).collect();
+                (below(&objects, pb.y, x, x + w, h), 0.0)
+            }
         };
-        let x = float_table_x(pb, w, f, legacy, ctx.mirror);
         let mut obstacles = if f.overlap { Vec::new() } else { header_table_areas(ctx, pb) };
         if !f.overlap {
             // TopAndBottom spans this table's current and possible distance-adjusted x.
