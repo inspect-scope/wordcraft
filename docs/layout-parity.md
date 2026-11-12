@@ -242,7 +242,7 @@ When content exceeds a preferred column width, AutoFit donors lose equal widths 
 
 Behind-text pictures in table cells participate in centre and bottom vertical alignment without increasing row flow height.
 
-TOC refresh reuses direct tab formatting from the first cached entry with a number-separator stop at each level for numbered entries, including imported range fields. Page-number tabs still use the TOC section width. No new default number-tab position is inferred.
+TOC refresh reuses direct tab formatting from the first cached entry with a number-separator stop at each level for numbered entries, including imported range fields. Page-number tabs still use the TOC section width. No new default number-tab position is inferred. When the entry's first line hangs, cached left, centre and decimal stops past its left indent are dropped, so a short title's page number still reaches the right stop. Synthetic control: `engine::tests::toc_page_numbers_reach_the_right_stop_after_short_titles`.
 
 Explicit cell page breaks (Word for Mac 16.113.2, compatibility modes 14 and 15): leading, interior and trailing breaks take no line height. Ordinary line breaks retain their lines; body page breaks still paginate. Synthetic regressions preserve UTF-8 cluster boundaries, bookmark objects and source offsets, including body/cell cache reuse without table-style formatting. Width, border strokes and residual row metrics remain outside this change.
 

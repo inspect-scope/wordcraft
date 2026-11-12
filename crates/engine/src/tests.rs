@@ -3899,12 +3899,19 @@ fn style_xml(id: &str, name: &str, ppr: &str, rpr: &str) -> String {
 
 /// A DOCX package with `body` and the paragraph `styles` after a default Normal style.
 fn docx_with_styles(body: &str, styles: &str) -> Vec<u8> {
+    docx_with_numbering(body, styles, None)
+}
+
+/// A DOCX package as [`docx_with_styles`] makes it, with a numbering part holding the
+/// `numbering` definitions (`w:abstractNum`, `w:num`) when given.
+fn docx_with_numbering(body: &str, styles: &str, numbering: Option<&str>) -> Vec<u8> {
     use std::io::Write;
     const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
     const RELS: &str = r#"xmlns="http://schemas.openxmlformats.org/package/2006/relationships""#;
     const TYPE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let numbering_rel = numbering.map_or(String::new(), |_| format!(r#"<Relationship Id="rId2" Type="{TYPE}/numbering" Target="numbering.xml"/>"#));
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    for (name, value) in [
+    let mut parts = vec![
         ("word/document.xml", format!(r#"<w:document {W}><w:body>{body}</w:body></w:document>"#)),
         (
             "word/styles.xml",
@@ -3914,13 +3921,17 @@ fn docx_with_styles(body: &str, styles: &str) -> Vec<u8> {
         ),
         (
             "word/_rels/document.xml.rels",
-            format!(r#"<Relationships {RELS}><Relationship Id="rId1" Type="{TYPE}/styles" Target="styles.xml"/></Relationships>"#),
+            format!(r#"<Relationships {RELS}><Relationship Id="rId1" Type="{TYPE}/styles" Target="styles.xml"/>{numbering_rel}</Relationships>"#),
         ),
         (
             "_rels/.rels",
             format!(r#"<Relationships {RELS}><Relationship Id="main" Type="{TYPE}/officeDocument" Target="word/document.xml"/></Relationships>"#),
         ),
-    ] {
+    ];
+    if let Some(numbering) = numbering {
+        parts.push(("word/numbering.xml", format!(r#"<w:numbering {W}>{numbering}</w:numbering>"#)));
+    }
+    for (name, value) in parts {
         zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
         zip.write_all(value.as_bytes()).unwrap();
     }
@@ -3967,6 +3978,72 @@ fn update_table_keeps_the_formatting_of_localized_toc_styles() {
         .collect();
     let level3 = entries.get(1).map(|e| e.0.clone()).unwrap_or_default();
     assert_eq!(entries, [("Arial".to_string(), true, false, 0.0), (level3, false, true, 11.0)], "{}", text(&s));
+}
+
+/// A numbered TOC entry's page number reaches the right-aligned stop whatever the length of its
+/// title. Word's cached entries carry a left indent and, at the same place, a left stop for the
+/// title, under a style that hangs the number by that much and sets a right stop. Update Table
+/// and the PDF refresh rebuild the entries without that indent: the number hangs into the
+/// margin and the title starts at the hanging indent, as in Word's own update. The cached title
+/// stop then lay inside the title's column, and a title ending before it put its page number
+/// there.
+#[test]
+fn toc_page_numbers_reach_the_right_stop_after_short_titles() {
+    let t = |s: &str| format!(r#"<w:r><w:t xml:space="preserve">{s}</w:t></w:r>"#);
+    let tab = "<w:r><w:tab/></w:r>";
+    let p = |st: &str, inner: &str| format!(r#"<w:p><w:pPr><w:pStyle w:val="{st}"/></w:pPr>{inner}</w:p>"#);
+    let entry = |st: &str, indent: u32, inner: &str| {
+        format!(
+            r#"<w:p><w:pPr><w:pStyle w:val="{st}"/><w:tabs><w:tab w:val="left" w:pos="{indent}"/><w:tab w:val="right" w:leader="dot" w:pos="8504"/></w:tabs><w:ind w:left="{indent}"/></w:pPr>{inner}</w:p>"#
+        )
+    };
+    let begin = r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-2" \f \n "1-1"</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>"#;
+    let (short, long) = ("Purpose", "A section title that runs well past the number column");
+    let body = [
+        entry("TOC1", 1196, &format!("{begin}{}{tab}{}", t("1"), t("Chapter"))),
+        entry("TOC2", 1191, &format!("{}{tab}{}{tab}{}", t("1.1"), t(short), t("9"))),
+        entry("TOC2", 1191, &format!("{}{tab}{}{tab}{}", t("1.2"), t(long), t("9"))),
+        r#"<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:br w:type="page"/></w:r></w:p>"#.to_string(),
+        p("Heading1", &t("Chapter")),
+        p("Heading2", &t(short)),
+        p("Heading2", &t(long)),
+        r#"<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1418" w:right="1134" w:bottom="1418" w:left="2268" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr>"#.to_string(),
+    ]
+    .concat();
+    let toc = |hanging: u32| format!(r#"<w:tabs><w:tab w:val="right" w:pos="8437"/></w:tabs><w:ind w:hanging="{hanging}"/>"#);
+    let styles = [
+        style_xml("Heading1", "heading 1", r#"<w:numPr><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="0"/>"#, ""),
+        style_xml("Heading2", "heading 2", r#"<w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="1"/>"#, ""),
+        style_xml("TOC1", "toc 1", &toc(1196), ""),
+        style_xml("TOC2", "toc 2", &toc(1191), ""),
+    ]
+    .concat();
+    let level =
+        |l: u32, text: &str| format!(r#"<w:lvl w:ilvl="{l}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="{text}"/></w:lvl>"#);
+    let numbering = format!(
+        r#"<w:abstractNum w:abstractNumId="0">{}{}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#,
+        level(0, "%1"),
+        level(1, "%1.%2")
+    );
+    let bytes = docx_with_numbering(&body, &styles, Some(&numbering));
+    // 2268 twips; the style's right stop is 8437 twips past it.
+    let (margin, right) = (113.4, 421.85);
+    for params in [json!({}), json!({"forPdf": true})] {
+        let mut s = Session::new(wordcraft_docx::read(&bytes).unwrap());
+        run(&mut s, "references.updateToc", params.clone());
+        let layout = s.layout();
+        let mut found = Vec::new();
+        for (i, b) in s.doc.body.iter().enumerate() {
+            let Some(p) = b.as_para().filter(|p| p.props.style.as_deref() == Some("TOC2")) else { continue };
+            let (title, page) = (p.text.find('\t').unwrap() + 1, p.text.rfind('\t').unwrap() + 1);
+            let title = layout.caret(&Pos::body(i, title)).unwrap().x;
+            let page = layout.caret(&Pos::body(i, page)).unwrap().x;
+            assert!((title - margin).abs() < 1.0, "{params}: {:?} starts its title at {title}", p.plain_text());
+            assert!(page > margin + right - 20.0 && page < margin + right, "{params}: {:?} puts its page number at {page}", p.plain_text());
+            found.push(p.plain_text().rsplit_once('\t').map(|(entry, _)| entry.to_string()).unwrap_or_default());
+        }
+        assert_eq!(found, [format!("1.1\t{short}"), format!("1.2\t{long}")], "{params}: {}", text(&s));
+    }
 }
 
 /// #3889: Word's TOC in two columns, written by Word in Portuguese. The TOC heading ends a
