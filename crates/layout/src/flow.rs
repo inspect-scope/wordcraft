@@ -503,7 +503,9 @@ impl<'a> Flow<'a> {
             };
             let over = bottom + tail > limit + 0.01;
             let split = bottom > limit + 0.01 && notes_split(pb, (&fit.notes, &line_notes), bottom);
-            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || free);
+            // Measured in Word: a page break with text after it stays at the foot of a full page,
+            // but a paragraph of nothing but the break moves on and leaves a blank page.
+            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || (free && !self.ends_with(fit.l1)));
             if over && fit.l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
                 break;
             }
@@ -528,6 +530,11 @@ impl<'a> Flow<'a> {
                 .text
                 .get(l.start..l.stop)
                 .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)))
+    }
+
+    /// Whether nothing but markers follows line `li` in the paragraph.
+    fn ends_with(&self, li: usize) -> bool {
+        self.pl.lines.get(li + 1..).is_none_or(|rest| rest.iter().all(|m| only_markers(self.p, m.start..m.stop)))
     }
 
     /// Whether the line (just taken, `fit.l1` is after it) forces a break, noted in `fit`.
