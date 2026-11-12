@@ -503,6 +503,8 @@ pub(crate) struct ObjectPlacement<'a> {
 
 pub(super) struct PlacedObjects {
     pub(super) behind: Vec<Placed>,
+    /// Each object's run of `behind`, in order: its z and item count.
+    pub(super) behind_groups: Vec<(u32, usize)>,
     pub(super) inline: Vec<Placed>,
     pub(super) front: Vec<(u32, u32, Vec<Placed>)>,
 }
@@ -516,7 +518,7 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
     let (mut behind, mut inline, mut front) = (Vec::new(), Vec::new(), Vec::new());
     let mut backs = Vec::new();
     let mut z_top = 0u32;
-    let Some(fl) = pl.lines.get(l0) else { return PlacedObjects { behind, inline, front } };
+    let Some(fl) = pl.lines.get(l0) else { return PlacedObjects { behind, behind_groups: Vec::new(), inline, front } };
     // Objects left out of the layout (hidden, or deleted in the final text) aren't placed.
     let left_out = left_out_objects(ctx.doc, p, at.table_chr, ctx.opts.show_hidden, ctx.hide_deleted);
     // A floating object belongs to its paragraph, not to its line: Word puts it on the page the
@@ -657,10 +659,11 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
         }
     }
     backs.sort_by_key(|(z, _)| *z);
+    let behind_groups = backs.iter().map(|(z, group)| (*z, group.len())).collect();
     for (_, group) in backs {
         behind.extend(group);
     }
-    PlacedObjects { behind, inline, front }
+    PlacedObjects { behind, behind_groups, inline, front }
 }
 
 fn paint_layer<'a>(wrap: Wrap, inline: &'a mut Vec<Placed>, back: &'a mut Vec<Placed>, front: &'a mut Vec<Placed>) -> &'a mut Vec<Placed> {

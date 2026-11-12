@@ -6710,6 +6710,29 @@ fn a_behind_or_in_front_of_text_picture_in_a_cell_leaves_the_row_alone() {
     }
 }
 
+/// Word draws a page's behind-text objects in one layer by z, whatever cell holds them: a
+/// signature box in an earlier row, above a stamp in a later one, covers the stamp. WordCraft
+/// drew each cell's in row order, so the stamp covered the signature.
+#[test]
+fn behind_text_objects_in_cells_paint_by_z() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut t = Table::new(2, 1, 468.0);
+    for (row, (h, z)) in [(50.0, 9), (60.0, 1)].into_iter().enumerate() {
+        let mut cp = wordcraft_doc::Paragraph::with_text("Cell", Default::default());
+        let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, z, ..Default::default() };
+        cp.insert_object(0, rect_shape(100.0, h, float), &Default::default()).unwrap();
+        t.rows[row].cells[0].blocks = vec![wordcraft_doc::para_block(cp)];
+    }
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let items = &l.pages[0].items;
+    let shape = |h: f32| items.iter().position(|it| matches!(it, Placed::Shape { rect, .. } if (rect.h - h).abs() < 0.01)).unwrap();
+    let text = items.iter().position(|it| matches!(it, Placed::Lines { story: StoryRef::Body, path, .. } if path.0.len() == 4)).unwrap();
+    assert!(shape(60.0) < shape(50.0), "the higher z draws last");
+    assert!(shape(50.0) < text, "both stay behind the cells' text");
+}
+
 #[test]
 fn autofit_sizes_columns_by_their_content() {
     let text = |s: &str| wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(s, Default::default()));

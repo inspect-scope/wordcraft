@@ -3,7 +3,7 @@ use super::floats::PlacedObjects;
 use super::floats::{
     ObjFrame, ObjectPlacement, WrapArea, align_in, float_rect, floating, left_out_objects, place_objects, rel_exclusions, wrap_area,
 };
-use super::foreground::{Foreground, append_foreground, extend_table_paint, order_foreground};
+use super::foreground::{Foreground, PaintLayer, append_foreground, extend_table_paint, order_foreground};
 use super::page::PageFrame;
 use super::placed::Placed;
 use super::table_flow::below;
@@ -328,7 +328,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                 // Pictures, shapes and text boxes: drawn, their areas and text boxes' text.
                 if !p.objects.is_empty() {
                     let at = ObjFrame { page: frame, col: (0.0, width), para_y: para_top, table_chr: table.map(|t| &t.chr), pinned: Some(&pinned) };
-                    let PlacedObjects { behind: back, inline, front } = place_objects(
+                    let PlacedObjects { behind: back, behind_groups, inline, front } = place_objects(
                         ctx,
                         &ObjectPlacement {
                             story,
@@ -349,9 +349,20 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                             float_objects_bottom = float_objects_bottom.max(spin.bounds(*rect).bottom());
                         }
                     }
-                    let at = behind.min(items.len());
-                    behind += back.len();
-                    items.splice(at..at, back);
+                    if in_cell {
+                        // Word draws every behind-text object of a page in one layer, by z: the
+                        // page sorts a cell's with those of later cells (`PaintLayer::Behind`).
+                        let mut back = back.into_iter();
+                        for (z, len) in behind_groups {
+                            let start = items.len().saturating_sub(behind);
+                            items.extend(back.by_ref().take(len));
+                            foreground.push(Foreground { range: start..items.len().saturating_sub(behind), z, floor: 0, layer: PaintLayer::Behind });
+                        }
+                    } else {
+                        let at = behind.min(items.len());
+                        behind += back.len();
+                        items.splice(at..at, back);
+                    }
                     items.extend(inline);
                     append_foreground(&mut items, &mut foreground, behind, front);
                 }
