@@ -81,6 +81,12 @@ fn supported_tail(para: &Paragraph, end: &Pos) -> bool {
         && matches!(para.objects.as_slice(), [InlineObject::FieldEnd, InlineObject::BookmarkStart { name }, InlineObject::BookmarkEnd { name: other }] if !name.is_empty() && name == other)
 }
 
+/// Content after a field end that starts its own paragraph is outside the field, so Word's
+/// Update Table keeps it, style and all. Templates use this for a hand-made last entry.
+fn kept_tail(para: &Paragraph, end: &Pos) -> bool {
+    end.off == 0 && para.section.is_none()
+}
+
 fn toc_break_tail(para: &Paragraph, tail: &str) -> bool {
     para.section.is_none() && tail == "\u{000c}" && para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading")
 }
@@ -174,7 +180,7 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
         let para = s.doc.para_at(end).ok_or_else(|| failed("TOC end paragraph is missing"))?;
         let after = end.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC field offset overflow"))?;
         let tail = para.text.get(after..).ok_or_else(|| failed("TOC field end is invalid"))?;
-        if !tail.is_empty() && !supported_tail(para, end) && !toc_break_tail(para, tail) {
+        if !tail.is_empty() && !supported_tail(para, end) && !toc_break_tail(para, tail) && !kept_tail(para, end) {
             return Err(failed("text after the TOC field end is unsupported"));
         }
         if !tail.is_empty() || para.section.is_some() {
@@ -303,19 +309,31 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
     let sections: Vec<_> = s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect();
     // Detach the admitted tail before deletion joins it onto the TOC's start paragraph.
     // Keep its formatting and section after the regenerated entries.
+    let mut kept_style = None;
     if let Some(end) = table.split_end {
         let mark = s.doc.para_at(&end).ok_or_else(|| failed("TOC end paragraph is missing"))?.mark.clone();
         let off = end.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC field offset overflow"))?;
         let tail = s.doc.split_paragraph(&Pos { off, ..end })?;
         let para = s.doc.para_mut(tail.story, &tail.path)?;
         para.mark = mark;
-        if para.text == "\u{000c}" && para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading") {
-            // A detached page break is not an entry for the TOC generator to replace.
-            para.props.style = None;
+        if para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading") {
+            // A detached tail is not an entry for the TOC generator to replace. A page break
+            // drops the style; other content gets it back after the entries.
+            let style = para.props.style.take();
+            if para.text != "\u{000c}" {
+                kept_style = style;
+            }
             para.touch();
         }
     }
     update_toc(s)?;
+    let restyled = kept_style.is_some();
+    if let Some(style) = kept_style {
+        let index = toc_range(s).ok_or_else(|| failed("refreshed TOC is missing"))?.1 + 1;
+        let para = s.doc.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(index))?;
+        para.props.style = Some(style);
+        para.touch();
+    }
     if s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect::<Vec<_>>() != sections {
         return Err(failed("TOC refresh changed section properties"));
     }
@@ -328,7 +346,7 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
     let printed = Session::new(print.doc);
     let entries = toc_entries(&printed, &table.code);
     let Some((start, end)) = toc_range(&printed) else { return Err(failed("refreshed TOC is missing")) };
-    if start != table.start || end.saturating_sub(start) != entries.len() {
+    if start != table.start || end.saturating_sub(start) != entries.len() + usize::from(restyled) {
         return Err(failed("TOC entry boundaries did not settle"));
     }
     let no_pages = table.code.has('n').then(|| table.code.arg('n').and_then(level_range).unwrap_or((1, 9)));

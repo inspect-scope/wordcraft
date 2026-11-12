@@ -186,21 +186,26 @@ fn existing_switch_defaults() {
 
 #[test]
 fn outside_toc_text_is_kept() {
-    for trailing in [false, true] {
-        let mut doc = control();
-        doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section = None;
-        if trailing {
-            let end = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
-            end.insert_text(end.len(), "KEEP trailing", &CharProps::default()).unwrap();
-        } else {
-            doc.insert_block(StoryRef::Body, &Path::top(3), Block::Para(Paragraph::with_text("KEEP following", CharProps::default()).styled("TOC1")))
-                .unwrap();
-        }
-        let before = serde_json::to_value(&doc).unwrap();
-        let mut session = Session::new(doc);
-        assert!(session.run("references.updateToc", &json!({"forPdf": true})).is_err());
-        assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
-    }
+    let mut doc = control();
+    doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section = None;
+    doc.insert_block(StoryRef::Body, &Path::top(3), Block::Para(Paragraph::with_text("KEEP following", CharProps::default()).styled("TOC1")))
+        .unwrap();
+    let before = serde_json::to_value(&doc).unwrap();
+    let mut session = Session::new(doc);
+    assert!(session.run("references.updateToc", &json!({"forPdf": true})).is_err());
+    assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
+
+    let mut doc = control();
+    let end = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
+    end.section = None;
+    end.insert_text(end.len(), "KEEP trailing", &CharProps::default()).unwrap();
+    let session = refresh_doc(doc).unwrap();
+    let (_, last) = toc_range(&session).unwrap();
+    assert_eq!(
+        session.doc.body[last + 1].as_para().unwrap().plain_text(),
+        "KEEP trailing",
+        "text after a paragraph-start field end is outside the field"
+    );
 }
 
 #[test]
@@ -609,4 +614,20 @@ fn toc_uses_section_page_format() {
             assert_eq!(print.doc.body[start + 1].as_para().unwrap().plain_text(), format!("Included\t{label}"));
         }
     }
+}
+
+#[test]
+fn hand_made_last_entry_is_kept() {
+    let mut doc = control();
+    let end = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
+    end.section = None;
+    end.props.style = Some("TOC2".into());
+    end.insert_text(end.len(), "Additional Testing\t15", &CharProps::default()).unwrap();
+    let session = refresh_doc(doc).unwrap();
+    let (start, last) = toc_range(&session).unwrap();
+    let tail = session.doc.body[last].as_para().unwrap();
+    assert_eq!(tail.plain_text(), "Additional Testing\t15");
+    assert_eq!(tail.props.style.as_deref(), Some("TOC2"), "the hand-made entry keeps its TOC style");
+    assert_eq!(session.doc.body[start + 1].as_para().unwrap().plain_text(), "Included\t1");
+    assert_eq!(last - start, 2);
 }
