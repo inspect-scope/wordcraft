@@ -6782,6 +6782,24 @@ fn behind_text_objects_in_cells_paint_by_z() {
     assert!(shape(50.0) < text, "both stay behind the cells' text");
 }
 
+/// An exact-height row clips its own text, not a behind-text box's: Word shows the box's text
+/// below the row.
+#[test]
+fn an_exact_row_keeps_a_behind_text_box() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut t = Table::new(1, 1, 468.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("Cell", Default::default()))];
+    t.rows[0].props.height = Some(30.0);
+    t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Exact;
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: 40.0, ..Default::default() };
+    let cell = Pos { story: StoryRef::Body, path: Path(vec![0, 0, 0, 0]), off: 0 };
+    let id = text_box_at(&mut d, &cell, "Below the row", 120.0, 30.0, float);
+    let l = lay(&d);
+    assert!(l.pages[0].items.iter().any(|i| matches!(i, Placed::Lines { story: StoryRef::Part(s), .. } if *s == id)), "the box keeps its text");
+}
+
 #[test]
 fn autofit_sizes_columns_by_their_content() {
     let text = |s: &str| wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(s, Default::default()));
