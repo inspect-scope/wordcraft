@@ -207,8 +207,9 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     let allow_same_style_space =
         in_cell && ctx.doc.settings.allow_space_of_same_style_in_table && matches!(ctx.doc.settings.compat_mode, 11 | 12 | 14);
     let mut items = Vec::new();
-    // Pictures behind the text go first; `behind` counts them.
+    // Pictures behind the text go first; `behind` counts them, by object and z.
     let mut behind = 0;
+    let mut behind_groups_all: Vec<(u32, usize)> = Vec::new();
     let mut foreground = Vec::new();
     // Wrap areas of the box's floating objects.
     let mut excl: Vec<WrapArea> = Vec::new();
@@ -349,20 +350,10 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                             float_objects_bottom = float_objects_bottom.max(spin.bounds(*rect).bottom());
                         }
                     }
-                    if in_cell {
-                        // Word draws every behind-text object of a page in one layer, by z: the
-                        // page sorts a cell's with those of later cells (`PaintLayer::Behind`).
-                        let mut back = back.into_iter();
-                        for (z, len) in behind_groups {
-                            let start = items.len().saturating_sub(behind);
-                            items.extend(back.by_ref().take(len));
-                            foreground.push(Foreground { range: start..items.len().saturating_sub(behind), z, floor: 0, layer: PaintLayer::Behind });
-                        }
-                    } else {
-                        let at = behind.min(items.len());
-                        behind += back.len();
-                        items.splice(at..at, back);
-                    }
+                    let at = behind.min(items.len());
+                    behind += back.len();
+                    items.splice(at..at, back);
+                    behind_groups_all.extend(behind_groups);
                     items.extend(inline);
                     append_foreground(&mut items, &mut foreground, behind, front);
                 }
@@ -405,6 +396,13 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     if in_cell {
         for group in &mut foreground {
             group.range = group.range.start.saturating_add(behind)..group.range.end.saturating_add(behind);
+        }
+        // Word draws every behind-text object of a page in one layer, by z: the page sorts a
+        // cell's with those of later cells. They stay first in the cell for fitting its row.
+        let mut start = 0;
+        for (z, len) in behind_groups_all {
+            foreground.push(Foreground { range: start..start + len, z, floor: 0, layer: PaintLayer::Behind });
+            start += len;
         }
     } else {
         order_foreground(&mut items, &foreground, behind);
