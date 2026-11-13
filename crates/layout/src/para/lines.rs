@@ -432,8 +432,19 @@ impl<'e> Breaker<'e> {
         let rp = &self.rp;
         let mut ex = Extents { asc: 0.0, desc: 0.0, obj_asc: 0.0 };
         let mut any = false;
+        let mut line_break = None;
         let dropped = pl.drop_cap.map_or(0, |d| d.0);
         for (k, c) in pl.clusters.get(c0..c1).into_iter().flatten().enumerate() {
+            // A line break's own font sizes only a line with nothing else on it; a page or column
+            // break's never does (the paragraph mark's sizes a line of only that).
+            match c.kind {
+                ClKind::LineBreak => {
+                    line_break = Some(c.style);
+                    continue;
+                }
+                ClKind::PageBreak | ClKind::ColumnBreak => continue,
+                _ => {}
+            }
             // Spaces and tabs never make a line taller, whatever their size: Word sizes a line by
             // its other characters (a line of only them takes the paragraph mark's), measured in
             // Word for Windows with 9 pt text and 11–20 pt tabs, spaces and ideographic spaces.
@@ -464,7 +475,7 @@ impl<'e> Breaker<'e> {
             any = true;
         }
         if (!any || (ex.asc == 0.0 && ex.desc == 0.0))
-            && let Some(st) = pl.styles.get(self.mark_style as usize)
+            && let Some(st) = pl.styles.get(line_break.filter(|_| !any).unwrap_or(self.mark_style) as usize)
         {
             ex.asc = st.ascent;
             ex.desc = st.descent;

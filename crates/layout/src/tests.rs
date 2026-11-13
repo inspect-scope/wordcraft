@@ -4116,6 +4116,30 @@ fn repeated_header_moves_with_the_first_row_that_does_not_fit() {
 }
 
 #[test]
+fn a_table_of_header_rows_only_moves_on_when_it_does_not_fit_whole() {
+    // Room for `room` points, then a table whose 20, 40 and 40 pt rows are all repeated header rows.
+    let rows_per_page = |room: f32| -> Vec<Vec<usize>> {
+        let mut d = Document::from_text("Text above the table");
+        d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.space_after = Some(648.0 - room - 14.0);
+        let mut t = Table::new(3, 1, 468.0);
+        for (row, h) in t.rows.iter_mut().zip([20.0, 40.0, 40.0]) {
+            row.props.header = true;
+            row.props.height = Some(h);
+            row.props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
+        }
+        d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+        lay(&d)
+            .pages
+            .iter()
+            .map(|p| p.items.iter().filter_map(|i| if let Placed::Cell { row, cell: 0, .. } = i { Some(*row) } else { None }).collect())
+            .collect()
+    };
+    assert_eq!(rows_per_page(110.0), vec![vec![0, 1, 2]]);
+    // The first two rows fit but the last doesn't: Word starts the whole table on the next page.
+    assert_eq!(rows_per_page(70.0), vec![vec![], vec![0, 1, 2]]);
+}
+
+#[test]
 fn a_repeated_header_is_never_left_alone_when_the_table_starts_mid_page() {
     // #1704: a table whose repeated header row fits at the bottom of a page while a body row
     // does not must not leave the header row there alone. Sweeps filler counts across the page
@@ -8740,6 +8764,74 @@ fn spaces_and_tabs_do_not_make_a_line_taller() {
     }
     assert!(pitch("x", &big) > plain + 5.0, "a 20 pt letter does make it taller");
     assert!(pitch("\u{A0}", &big) > plain + 5.0, "so does a no-break space");
+}
+
+/// A line break's own size makes a line taller only when nothing else is on the line (measured in
+/// Word for Mac: 9 pt lines ended by unformatted 12 pt or 24 pt breaks kept a 10.3 pt pitch, while a
+/// line of only a 24 pt break was 27.6 pt tall).
+#[test]
+fn a_line_break_sizes_only_an_otherwise_empty_line() {
+    use wordcraft_doc::props::CharProps;
+    let small = CharProps { size: Some(9.0), ..Default::default() };
+    let big = CharProps { size: Some(24.0), ..Default::default() };
+    // The top of the third line of "A⏎B⏎C" (or "A⏎⏎C") over the first, with the breaks in `brk`.
+    let third_line = |middle: &str, brk: &CharProps| {
+        let mut p = wordcraft_doc::Paragraph::with_text("A", small.clone());
+        p.insert_text(p.len(), "\n", brk).unwrap();
+        p.insert_text(p.len(), middle, &small).unwrap();
+        p.insert_text(p.len(), "\n", brk).unwrap();
+        p.insert_text(p.len(), "C", &small).unwrap();
+        p.props = ParaProps { space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+        p.mark = small.clone();
+        let mut d = Document::new();
+        d.body = vec![wordcraft_doc::para_block(p)];
+        let l = lay(&d);
+        let c = 3 + middle.chars().count();
+        l.caret(&Pos::body(0, c)).unwrap().top - l.caret(&Pos::body(0, 0)).unwrap().top
+    };
+    let plain = third_line("B", &small);
+    assert!((third_line("B", &big) - plain).abs() < 0.01, "{} vs {plain}", third_line("B", &big));
+    assert!(third_line("", &big) > third_line("", &small) + 10.0, "an empty line takes its break's size");
+}
+
+/// A page break's own size never sizes its line: a break-only paragraph takes its mark's height
+/// (measured in Word for Mac: a 24 pt page break in a 1 pt-mark paragraph still fit in the 6 pt
+/// left at a page's foot).
+#[test]
+fn a_page_break_takes_its_paragraph_marks_height() {
+    use wordcraft_doc::props::CharProps;
+    let mut p = wordcraft_doc::Paragraph::with_text("", CharProps::default());
+    p.insert_text(0, "\u{000C}", &CharProps { size: Some(24.0), ..Default::default() }).unwrap();
+    p.mark = CharProps { size: Some(1.0), ..Default::default() };
+    p.props = ParaProps { space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+    let mut d = Document::new();
+    d.body = vec![wordcraft_doc::para_block(p)];
+    let l = lay(&d);
+    let height = l.pages[0].items.iter().find_map(|i| if let Placed::Lines { para, .. } = i { para.lines.first().map(|l| l.height) } else { None });
+    assert!(height.is_some_and(|h| h < 3.0), "{height:?}");
+}
+
+/// A cell's empty last paragraph right after a nested table takes no room (measured in Word for
+/// Mac: the row ended under the nested table; with text the paragraph took its line).
+#[test]
+fn an_empty_paragraph_after_a_nested_table_takes_no_room() {
+    let cell_height = |tail: &str| {
+        let mut inner = Table::new(1, 1, 150.0);
+        inner.rows[0].props.height = Some(20.0);
+        inner.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Exact;
+        let mut t = Table::new(1, 1, 300.0);
+        t.rows[0].cells[0].blocks =
+            vec![std::sync::Arc::new(Block::Table(inner)), wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(tail, Default::default()))];
+        let mut d = Document::from_text("Before");
+        d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+        lay(&d).pages[0]
+            .items
+            .iter()
+            .find_map(|it| if let Placed::Cell { rect, table, .. } = it { (table.0.len() == 1).then_some(rect.h) } else { None })
+            .unwrap()
+    };
+    assert!((cell_height("") - 20.0).abs() < 2.0, "{}", cell_height(""));
+    assert!(cell_height("Tail") > cell_height("") + 10.0, "{}", cell_height("Tail"));
 }
 
 /// A list label taller than its text makes the first line taller above the baseline only: Word

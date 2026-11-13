@@ -241,6 +241,13 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
         path.push(i as u32);
         match &**b {
             Block::Para(p) => {
+                // Word gives no room to a cell's empty last paragraph right after a nested table.
+                let collapsed = in_cell
+                    && i + 1 == blocks.len()
+                    && p.is_empty()
+                    && p.objects.is_empty()
+                    && i.checked_sub(1).and_then(|k| blocks.get(k)).is_some_and(|b| matches!(&**b, Block::Table(_)));
+                let start_y = y;
                 let label = ctx.next_label(p);
                 let listed = label.is_some();
                 let mut pl = ctx.para_labelled(p, width, table, &[], label.clone());
@@ -359,7 +366,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                 }
                 // Automatic space after: none after the last paragraph of a cell or box.
                 let after = if pl.rp.after_auto && i + 1 == blocks.len() { 0.0 } else { pl.rp.space_after };
-                y += edges.top + pl.height + edges.bottom + after;
+                y = if collapsed { start_y } else { y + edges.top + pl.height + edges.bottom + after };
                 prev_after = after;
                 prev_after_auto = pl.rp.after_auto;
                 prev_listed = listed;
