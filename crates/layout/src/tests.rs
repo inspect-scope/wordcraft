@@ -2218,6 +2218,27 @@ fn turned_text_wraps_in_an_exact_row() {
 }
 
 #[test]
+fn turned_text_wraps_to_merged_rows_height() {
+    use wordcraft_doc::props::{HeightRule, VMerge};
+    let mut d = turned_table(TextDirection::Down, &"word ".repeat(15), None);
+    if let Some(Block::Table(t)) = d.body.get_mut(1).map(Arc::make_mut) {
+        t.rows.push(t.rows[0].clone());
+        t.rows[1].cells[1].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("", Default::default()))];
+        t.rows[0].cells[1].props.vmerge = VMerge::Restart;
+        t.rows[1].cells[1].props.vmerge = VMerge::Continue;
+        for row in &mut t.rows {
+            row.props.height = Some(40.0);
+            row.props.height_rule = HeightRule::AtLeast;
+        }
+    }
+    let l = lay(&d);
+    let it = turned_lines(&l);
+    let lines = if let Placed::Lines { l0, l1, .. } = it { l1 - l0 } else { 0 };
+    let b = it.turned_bounds().unwrap();
+    assert!(lines > 1 && b.h > 40.0 && b.h < 85.0, "wraps to both rows' 80pt, not one row's 40pt: {lines} lines, {b:?}");
+}
+
+#[test]
 fn hostile_turned_cells_never_panic() {
     // Empty, huge and nested turned cells, in exact rows too small for anything.
     for dir in [TextDirection::Down, TextDirection::Up] {
@@ -5965,6 +5986,34 @@ fn a_floating_table_ignores_a_paragraphs_empty_lines() {
     );
 }
 
+/// A table anchored to the paragraph after a column-wide wrapping drawing goes below the drawing
+/// with that paragraph, as in Word (a form's "intervals" table under its "requirements" group).
+/// WordCraft placed it where the paragraph would start without the drawing, over it.
+#[test]
+fn a_paragraph_anchored_table_goes_below_a_wrapping_drawing() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    use wordcraft_doc::props::TableFloat;
+    let mut d = Document::from_text("Drawing\nAfter the table.");
+    let float = Float { wrap: Wrap::Square, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: 20.0, ..Default::default() };
+    let mut p = d.body[0].as_para().unwrap().clone();
+    p.insert_object(0, rect_shape(468.0, 200.0, float), &Default::default()).unwrap();
+    d.body[0] = wordcraft_doc::para_block(p);
+    let mut t = Table::new(1, 1, 400.0);
+    t.props.float = Some(TableFloat { h_rel: Anchor::Margin, v_rel: Anchor::Paragraph, overlap: false, ..Default::default() });
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let shape = l.pages[0].items.iter().find_map(|it| match it {
+        Placed::Shape { rect, .. } => Some(*rect),
+        _ => None,
+    });
+    let cell = l.pages[0].items.iter().find_map(|it| match it {
+        Placed::Cell { rect, .. } => Some(*rect),
+        _ => None,
+    });
+    let (shape, cell) = (shape.unwrap(), cell.unwrap());
+    assert!(cell.y >= shape.bottom() - 0.5, "the table at {} overlaps the drawing ending at {}", cell.y, shape.bottom());
+}
+
 #[test]
 fn a_floating_table_taller_than_a_page_runs_across_pages() {
     use wordcraft_doc::para::Anchor;
@@ -6708,6 +6757,47 @@ fn a_behind_or_in_front_of_text_picture_in_a_cell_leaves_the_row_alone() {
         let gap = row_gap(wrap);
         assert!(gap < 60.0, "{wrap:?}: text after the table is {gap}pt below the cell's text; the 300pt picture grew the row");
     }
+}
+
+/// Word draws a page's behind-text objects in one layer by z, whatever cell holds them: a
+/// signature box in an earlier row, above a stamp in a later one, covers the stamp. WordCraft
+/// drew each cell's in row order, so the stamp covered the signature.
+#[test]
+fn behind_text_objects_in_cells_paint_by_z() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut t = Table::new(2, 1, 468.0);
+    for (row, (h, z)) in [(50.0, 9), (60.0, 1)].into_iter().enumerate() {
+        let mut cp = wordcraft_doc::Paragraph::with_text("Cell", Default::default());
+        let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, z, ..Default::default() };
+        cp.insert_object(0, rect_shape(100.0, h, float), &Default::default()).unwrap();
+        t.rows[row].cells[0].blocks = vec![wordcraft_doc::para_block(cp)];
+    }
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let items = &l.pages[0].items;
+    let shape = |h: f32| items.iter().position(|it| matches!(it, Placed::Shape { rect, .. } if (rect.h - h).abs() < 0.01)).unwrap();
+    let text = items.iter().position(|it| matches!(it, Placed::Lines { story: StoryRef::Body, path, .. } if path.0.len() == 4)).unwrap();
+    assert!(shape(60.0) < shape(50.0), "the higher z draws last");
+    assert!(shape(50.0) < text, "both stay behind the cells' text");
+}
+
+/// An exact-height row clips its own text, not a behind-text box's: Word shows the box's text
+/// below the row.
+#[test]
+fn an_exact_row_keeps_a_behind_text_box() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut t = Table::new(1, 1, 468.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("Cell", Default::default()))];
+    t.rows[0].props.height = Some(30.0);
+    t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Exact;
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: 40.0, ..Default::default() };
+    let cell = Pos { story: StoryRef::Body, path: Path(vec![0, 0, 0, 0]), off: 0 };
+    let id = text_box_at(&mut d, &cell, "Below the row", 120.0, 30.0, float);
+    let l = lay(&d);
+    assert!(l.pages[0].items.iter().any(|i| matches!(i, Placed::Lines { story: StoryRef::Part(s), .. } if *s == id)), "the box keeps its text");
 }
 
 #[test]
@@ -8762,6 +8852,26 @@ fn a_text_frame_in_a_cell_floats_beside_the_text() {
     let (frame, text) = (at(0), at(1));
     assert!((frame.top - text.top).abs() < 0.5, "the frame takes no room: {} vs {}", frame.top, text.top);
     assert!(frame.x > text.x + 200.0, "right-aligned in the cell: {} vs {}", frame.x, text.x);
+}
+
+/// A cell paragraph framed against the page (a divider page's floating table, its paragraphs
+/// carrying the table's page position as a frame) stays in its cell in Word. WordCraft placed it
+/// apart at the page offset, past the page's foot, and added a blank page per divider.
+#[test]
+fn a_page_anchored_frame_in_a_cell_stays_in_the_cell() {
+    use wordcraft_doc::props::TextFrame;
+    let mut d = Document::from_text("Above");
+    let mut t = Table::new(1, 1, 300.0);
+    let mut framed = wordcraft_doc::Paragraph::with_text("Divider", Default::default());
+    framed.props.frame = Some(TextFrame { y: 777.5, h_anchor: "page".into(), v_anchor: "page".into(), wrap: "around".into(), ..Default::default() });
+    let text = wordcraft_doc::Paragraph::with_text("Cell text", Default::default());
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(framed), wordcraft_doc::para_block(text)];
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let at = |i: u32| l.caret(&Pos { story: StoryRef::Body, path: Path(vec![1, 0, 0, i]), off: 0 }).unwrap();
+    let (frame, text) = (at(0), at(1));
+    assert!(text.top > frame.top + 5.0, "the framed paragraph takes its line: {} vs {}", frame.top, text.top);
+    assert_eq!(l.pages.len(), 1, "no page for the frame's offset");
 }
 
 /// Word has no frames inside a text box: a paragraph there whose style carries a frame (a

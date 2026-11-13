@@ -6,6 +6,9 @@ pub(super) enum PaintLayer {
     Foreground,
     CellFill,
     Before(usize),
+    /// A behind-text object from a table cell: drawn after the story's own behind-text items,
+    /// before its text, in z order with the others.
+    Behind,
 }
 
 impl PaintLayer {
@@ -92,7 +95,7 @@ pub(super) fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], b
         let anchor = match group.layer {
             PaintLayer::Before(anchor) => anchor,
             PaintLayer::CellFill => group.range.start,
-            PaintLayer::Foreground => continue,
+            PaintLayer::Foreground | PaintLayer::Behind => continue,
         };
         before.entry(anchor.saturating_add(behind).min(items.len())).or_default().push(item.clone());
     }
@@ -100,12 +103,30 @@ pub(super) fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], b
     let mut front: Vec<_> = ranges
         .iter()
         .map(|g| {
+            if matches!(g.layer, PaintLayer::Behind) {
+                return (g.z, Vec::new());
+            }
             z_top = z_top.max(g.z).max(g.floor);
             (if g.z == 0 { z_top } else { g.z }, Vec::new())
         })
         .collect();
     let len = items.len();
+    // Behind-text runs, each kept whole, then ordered by z (stable: equal z keeps story order).
+    let mut under: Vec<(usize, Vec<Placed>)> = Vec::new();
+    for (item, group) in items.iter().zip(&marked) {
+        let Some(index) = group.filter(|&i| ranges.get(i).is_some_and(|g| matches!(g.layer, PaintLayer::Behind))) else { continue };
+        match under.last_mut() {
+            Some((last, run)) if *last == index => run.push(item.clone()),
+            _ => under.push((index, vec![item.clone()])),
+        }
+    }
+    under.sort_by_key(|(index, _)| ranges.get(*index).map_or(0, |g| g.z));
+    let mut under = Some(under);
+    let start = behind.min(len);
     for (i, (item, group)) in std::mem::take(items).into_iter().zip(marked).enumerate() {
+        if i == start {
+            items.extend(under.take().into_iter().flatten().flat_map(|(_, run)| run));
+        }
         if let Some(group) = before.remove(&i) {
             items.extend(group);
         }
@@ -119,6 +140,7 @@ pub(super) fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], b
             None => items.push(item),
         }
     }
+    items.extend(under.take().into_iter().flatten().flat_map(|(_, run)| run));
     if let Some(group) = before.remove(&len) {
         items.extend(group);
     }

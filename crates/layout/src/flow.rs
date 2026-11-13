@@ -503,7 +503,10 @@ impl<'a> Flow<'a> {
             };
             let over = bottom + tail > limit + 0.01;
             let split = bottom > limit + 0.01 && notes_split(pb, (&fit.notes, &line_notes), bottom);
-            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || free);
+            // Measured in Word: a paragraph of nothing but a page break that can't start on the
+            // page moves on and leaves a blank page; a break line within or before text stays.
+            let starts_blank = fit.l1 == l0 && self.ends_with(fit.l1);
+            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || (free && !starts_blank));
             if over && fit.l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
                 break;
             }
@@ -528,6 +531,11 @@ impl<'a> Flow<'a> {
                 .text
                 .get(l.start..l.stop)
                 .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)))
+    }
+
+    /// Whether nothing but markers follows line `li` in the paragraph.
+    fn ends_with(&self, li: usize) -> bool {
+        self.pl.lines.get(li + 1..).is_none_or(|rest| rest.iter().all(|m| only_markers(self.p, m.start..m.stop)))
     }
 
     /// Whether the line (just taken, `fit.l1` is after it) forces a break, noted in `fit`.
@@ -615,7 +623,7 @@ impl<'a> Flow<'a> {
             table_chr: None,
             pinned: None,
         };
-        let PlacedObjects { behind, inline, front } = place_objects(
+        let PlacedObjects { behind, inline, front, .. } = place_objects(
             ctx,
             &ObjectPlacement {
                 story: StoryRef::Body,
@@ -929,7 +937,7 @@ pub(crate) fn place_outline_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragr
         table_chr: None,
         pinned: None,
     };
-    let PlacedObjects { behind, inline, front } = place_objects(
+    let PlacedObjects { behind, inline, front, .. } = place_objects(
         ctx,
         &ObjectPlacement {
             story: StoryRef::Body,

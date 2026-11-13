@@ -189,10 +189,14 @@ fn note_line_is_not_pure_break() {
     assert_eq!(note_pages, [1]);
 }
 
+/// Measured in Word: a paragraph of nothing but a page break that can't start on a full page
+/// moves on, leaving a blank landscape page before the portrait one.
 #[test]
-fn first_pure_break_still_fits() {
+fn full_page_pure_break_moves() {
     let doc = document(Lead::Table, section(Paper::Landscape).text_height(), "\u{000C}");
-    assert_transition(&doc, &lay(&doc));
+    let laid = lay(&doc);
+    assert_eq!(laid.pages.iter().map(|p| p.w > p.h).collect::<Vec<_>>(), [true, true, false, true]);
+    assert_eq!(laid.caret(&Pos::body(1, 0)).unwrap().page, 1);
 }
 
 #[test]

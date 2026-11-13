@@ -207,3 +207,24 @@ fn final_break_keeps_endnotes() {
     assert_eq!(laid.pages.len(), 2, "retain the page used by the document's endnotes");
     assert!(laid.pages[1].items.iter().any(|item| matches!(item, Placed::Lines { story: StoryRef::Part(part), .. } if *part == id)));
 }
+
+/// Measured in Word: a paragraph of nothing but a page break whose line doesn't fit at the foot
+/// of a full page moves on and leaves a blank page; a break with text after it stays.
+#[test]
+fn pure_break_past_the_foot_leaves_a_blank_page() {
+    // Letter: 648pt of text, 35 lines of 18pt leave 18pt minus a little.
+    let lines: Vec<_> = (0..35)
+        .map(|i| {
+            let mut p = paragraph(&format!("Line {i}"));
+            p.props.space_before = Some(if i == 0 { 5.0 } else { 0.0 });
+            para_block(p)
+        })
+        .collect();
+    for (tail, pages) in [("", 3), ("Next", 2)] {
+        let mut doc = Document::new();
+        doc.body = lines.clone();
+        doc.body.push(para_block(paragraph(&format!("\u{000C}{tail}"))));
+        doc.body.push(para_block(paragraph("After")));
+        assert_eq!(lay(&doc).pages.len(), pages, "break then {tail:?}");
+    }
+}
