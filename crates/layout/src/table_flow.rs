@@ -217,14 +217,15 @@ fn place_table_rows(
     // whole; a row taller than a page then splits from the top of that page.
     let short_of_min = |ri: usize, room: f32| tl.rows.get(ri).is_some_and(|row| row.min_height > room + 0.01);
     // Like Word, repeated header rows don't stay alone at the bottom of a page: when the first row
-    // after them can't start under them there, the table starts on the next page.
-    let first = header_rows.len();
-    if !header_rows.is_empty()
+    // after them can't start under them there, the table starts on the next page. A table of header
+    // rows only starts on the next page when it doesn't fit whole: its last row is checked instead.
+    let first = if header_rows.len() == tl.rows.len() { header_rows.len().saturating_sub(1) } else { header_rows.len() };
+    if first > 0
         && !pb.at_top()
         && let Some(row) = tl.rows.get(first)
     {
         let room = pb.bottom - pb.y - tl.rows.iter().take(first).map(|r| r.height).sum::<f32>();
-        let splittable = !t.rows.get(first).is_some_and(|r| r.props.cant_split);
+        let splittable = !header_rows.contains(&first) && !t.rows.get(first).is_some_and(|r| r.props.cant_split);
         if row.height + row.edge > room + 0.01 && (short_of_min(first, room) || !(splittable && table::split_row_keeping_cells(row, room).is_some()))
         {
             pb.advance(block, body_top);
