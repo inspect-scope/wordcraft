@@ -14,9 +14,9 @@ subsetted. Each retry constructs a fresh writer. Readable fonts otherwise remain
 selectable text.
 
 WordCraft supplies its existing metadata policy: option overrides, subject/description fallback,
-split keywords, and nonempty ASCII language tags. Creation dates come from the document when valid,
-otherwise from the native system clock or the browser clock on WebAssembly. The shared writer
-never chooses a clock or changes this policy.
+split keywords, and nonempty ASCII language tags. WordCraft includes a creation date when the
+document supplies a valid one. CLI conversion exports a PDF copy without stamping the source
+document, so repeating a conversion does not add a different creation date.
 
 ## Backend sources and features
 

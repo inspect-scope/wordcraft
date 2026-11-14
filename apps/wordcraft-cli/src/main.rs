@@ -476,6 +476,10 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             update_convert_fields(&mut s, &rest, &json!({"forPdf": true, "markup": markup}))?;
             let r = if o.to_ascii_lowercase().ends_with(".png") {
                 s.run("file.exportPng", &json!({"path": o, "page": 1, "markup": markup}))
+            } else if o.to_ascii_lowercase().ends_with(".pdf") && format.is_none() {
+                // PDF is a copy. Saving through file.save would stamp missing document dates
+                // before the renderer writes metadata, making identical conversions differ.
+                s.run("file.exportPdf", &json!({"path": o, "markup": markup}))
             } else {
                 let mut params = json!({"path": o, "markup": markup});
                 if let Some(f) = format {
