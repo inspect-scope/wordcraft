@@ -67,7 +67,7 @@ use exporter::Exporter;
 #[cfg(test)]
 use glyphs::{baseline, cluster_ends, left_to_right, split_clusters, visual_order};
 #[cfg(test)]
-use metadata::{civil, parse_iso};
+use metadata::parse_iso;
 pub use options::{PdfError, PdfOptions};
 #[cfg(test)]
 use paint::shape_path;

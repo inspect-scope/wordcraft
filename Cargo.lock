@@ -6979,13 +6979,11 @@ dependencies = [
 name = "wordcraft-pdf"
 version = "0.15.0"
 dependencies = [
- "chrono",
  "craft-pdf",
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
  "image",
- "js-sys",
  "kurbo",
  "log",
  "thiserror 2.0.21",

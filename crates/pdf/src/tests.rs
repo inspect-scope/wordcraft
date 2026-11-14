@@ -211,6 +211,21 @@ fn exports_pages_text_and_structure() {
 }
 
 #[test]
+fn absent_or_invalid_created_date_is_not_synthesized() {
+    for created in ["", "not-a-date"] {
+        let mut document = Document::from_text("stable PDF metadata");
+        document.core.created = created.into();
+
+        let first = export(&document, &PdfOptions::default()).unwrap();
+        let second = export(&document, &PdfOptions::default()).unwrap();
+
+        let raw = String::from_utf8_lossy(&first);
+        assert!(!raw.contains("/CreationDate"), "created={created:?}: renderer must omit synthesized creation metadata");
+        assert_eq!(first, second, "created={created:?}: exports should be byte-identical");
+    }
+}
+
+#[test]
 fn page_selection_and_errors() {
     let d = sample();
     let one = export(&d, &PdfOptions { pages: Some(vec![1]), tagged: false, ..Default::default() }).unwrap();
@@ -492,13 +507,6 @@ fn shapes_have_paths() {
     assert!(shape_path(ShapeKind::Ellipse, &Rect::new(0.0, 0.0, f32::NAN, 1.0), None).is_none());
     assert_eq!(parse_iso("2024-02-03T04:05:06Z"), Some((2024, 2, 3, 4, 5, 6)));
     assert_eq!(parse_iso("garbage"), None);
-    assert_eq!(civil(0), (1970, 1, 1, 0, 0, 0));
-    // Past chrono's ±262143-year range `civil` keeps the proleptic Gregorian date the old
-    // hand-rolled converter gave (only the caller's 0..=9999 PDF year clamp applies later), rather
-    // than falling back to the epoch. Values pinned from the old formula.
-    assert_eq!(civil(10_000_000_000_000), (318857, 5, 20, 17, 46, 40));
-    assert_eq!(civil(-10_000_000_000_000), (-314918, 8, 13, 6, 13, 20));
-    assert_eq!(civil(253_402_300_800), (10000, 1, 1, 0, 0, 0));
 }
 
 #[test]

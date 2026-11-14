@@ -47,3 +47,28 @@ fn convert_refresh_is_opt_in() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn convert_pdf_preserves_absent_created_metadata_deterministically() {
+    let dir = std::env::temp_dir().join(format!("wc-convert-pdf-metadata-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut document = Document::from_text("PDF metadata without a source date");
+    document.core.created.clear();
+    let input = dir.join("in.docx");
+    let docx = wordcraft_engine::io::save_bytes_with("in.docx", &document, None, &Default::default()).unwrap();
+    std::fs::write(&input, docx).unwrap();
+
+    let convert = |name: &str| {
+        let output = dir.join(name);
+        let result = Command::new(env!("CARGO_BIN_EXE_wordcraft-cli")).arg("convert").arg(&input).arg(&output).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        std::fs::read(output).unwrap()
+    };
+    let first = convert("first.pdf");
+    let second = convert("second.pdf");
+    let raw = String::from_utf8_lossy(&first);
+    assert!(!raw.contains("/CreationDate"), "the PDF must not invent a creation date");
+    assert_eq!(first, second, "repeated PDF conversions should be byte-identical");
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
