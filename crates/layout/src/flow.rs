@@ -10,6 +10,7 @@ use super::foreground::append_foreground;
 use super::notes::{DECOR_STORY, NoteBox, para_notes};
 use super::page::{PageBuilder, PageFrame, item_bottom};
 use super::placed::Placed;
+use super::table_flow::kept_table_start;
 use super::{
     Anchor, Arc, Block, Counters, Document, HashMap, InlineObject, Level, LineEnd, Page, ParaLayout, Paragraph, Path, Rect, SectionStart, StoryRef,
     TextDirection, ViewMode, Wrap, outline, para,
@@ -1001,7 +1002,8 @@ fn space_after_kept(ctx: &Ctx, block: usize, rp: &wordcraft_doc::resolve::Resolv
 /// of a three-line one under that control (two would leave a widow), or all
 /// of it under keep lines together — or all of it and what it keeps with in turn when it is
 /// kept with the next too (a chain moves together in Word). Word carries a kept heading over
-/// when the paragraph after it cannot start on the page (#966).
+/// when the paragraph after it cannot start on the page (#966). A table after it needs its first
+/// row, or the rows that row keeps with.
 fn next_first_line(ctx: &mut Ctx, block: usize, width: f32, depth: usize, counters: &mut Counters) -> f32 {
     match ctx.doc.body.get(block + 1).map(|b| &**b) {
         Some(Block::Para(p)) => {
@@ -1059,6 +1061,7 @@ fn next_first_line(ctx: &mut Ctx, block: usize, width: f32, depth: usize, counte
                     }
             }
         }
+        Some(Block::Table(t)) if t.props.float.is_none() => kept_table_start(ctx, t, block + 1, width, counters),
         Some(Block::Table(_)) => 24.0,
         None => 0.0,
     }

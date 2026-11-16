@@ -9256,6 +9256,81 @@ fn keep_with_next_carries_the_heading_when_keep_lines_moves_the_next_paragraph()
     assert_eq!(pages(fit, false), [0, 0, 1], "without it the paragraph splits: {fit}");
 }
 
+/// Pages of an inspection item's heading, notes and photo rows: a kept heading and kept notes
+/// before a two-column photo table, below a filler line `filler` points tall. Each entry of
+/// `rows` is a row of pictures that tall; every row but the last keeps with the next.
+fn photo_item_pages(filler: f32, rows: &[f32]) -> Vec<usize> {
+    use wordcraft_doc::props::LineSpacing;
+    let plain = ParaProps {
+        space_before: Some(0.0),
+        space_after: Some(0.0),
+        line_spacing: Some(LineSpacing::Exactly(12.0)),
+        widow_control: Some(false),
+        ..Default::default()
+    };
+    let kept = ParaProps { keep_next: Some(true), ..plain.clone() };
+    let para = |text: &str, props: &ParaProps| {
+        let mut p = Paragraph::with_text(text, Default::default());
+        p.props = props.clone();
+        wordcraft_doc::para_block(p)
+    };
+    let mut d = Document::new();
+    d.last_section.page_w = 400.0;
+    d.last_section.page_h = 360.0;
+    d.last_section.margin_top = 36.0;
+    d.last_section.margin_bottom = 36.0;
+    d.last_section.margin_left = 36.0;
+    d.last_section.margin_right = 36.0;
+    let mut t = Table::new(rows.len(), 2, 328.0);
+    t.props.style = None;
+    t.props.cell_margins = Some([0.0; 4]);
+    for (ri, (row, h)) in t.rows.iter_mut().zip(rows).enumerate() {
+        for cell in &mut row.cells {
+            let mut p = Paragraph::with_text("", Default::default());
+            p.props = ParaProps { keep_next: Some(ri + 1 < rows.len()), line_spacing: Some(LineSpacing::Exactly(*h)), ..plain.clone() };
+            p.insert_object(0, picture(150.0, *h, Default::default()), &Default::default()).unwrap();
+            cell.blocks = vec![wordcraft_doc::para_block(p)];
+        }
+    }
+    d.body = vec![
+        para("Filler", &ParaProps { line_spacing: Some(LineSpacing::Exactly(filler)), ..plain.clone() }),
+        para("Heading", &kept),
+        para("Notes", &kept),
+        Arc::new(Block::Table(t)),
+    ];
+    let l = lay(&d);
+    let page_of = |prefix: &[u32]| {
+        l.pages
+            .iter()
+            .position(|page| page.items.iter().any(|item| matches!(item, Placed::Lines { path, .. } if path.0.starts_with(prefix))))
+            .unwrap()
+    };
+    let mut pages = vec![page_of(&[1]), page_of(&[2])];
+    pages.extend((0..rows.len() as u32).map(|row| page_of(&[3, row])));
+    pages
+}
+
+/// Word keeps a kept paragraph with the table rows after it: the first row, or the chain of rows
+/// it keeps with. A heading and notes before a photo table that fits stay with it.
+#[test]
+fn keep_with_next_stays_with_a_kept_photo_table_that_fits() {
+    assert_eq!(photo_item_pages(100.0, &[60.0, 60.0]), [0, 0, 0, 0]);
+}
+
+/// When the table's kept rows don't fit below them, the heading and notes move with the table:
+/// WordCraft counted the table as 24 pt and left them behind.
+#[test]
+fn keep_with_next_moves_with_a_kept_photo_table_that_does_not_fit() {
+    assert_eq!(photo_item_pages(160.0, &[60.0, 60.0]), [1, 1, 1, 1], "the first row fits, the row it keeps with does not");
+    assert_eq!(photo_item_pages(160.0, &[120.0]), [1, 1, 1], "the first row does not fit");
+}
+
+/// An item taller than a page does not move: it starts where it is and runs on.
+#[test]
+fn keep_with_next_flows_before_a_kept_photo_table_taller_than_a_page() {
+    assert_eq!(photo_item_pages(12.0, &[150.0, 150.0, 20.0]), [0, 0, 0, 1, 1]);
+}
+
 #[test]
 fn section_mark_hidden_styles() {
     use wordcraft_doc::props::LineSpacing;

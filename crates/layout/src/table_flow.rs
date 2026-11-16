@@ -8,7 +8,7 @@ use super::headers::{MAX_HEADER_ITEMS, header_table_areas, header_wraps};
 use super::notes::table_notes;
 use super::page::{PageBuilder, PageFrame, page_frame};
 use super::placed::Placed;
-use super::{Anchor, Arc, HeightRule, Path, Rect, StoryRef, TableFloat, ViewMode, WrapText, table};
+use super::{Anchor, Arc, Counters, HeightRule, Path, Rect, StoryRef, TableFloat, ViewMode, WrapText, table};
 
 /// Footer tables and mid-page drawings let body flow resume below them.
 pub(crate) fn footer_body_wraps(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<WrapArea> {
@@ -77,6 +77,19 @@ pub(crate) fn footer_body_wraps(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<WrapArea
     ctx.track_totals = track;
     ctx.footer_wraps.insert(key, areas.clone());
     areas
+}
+
+/// The room in-flow table `t` (body block `block`) needs on a page for the paragraph kept with it:
+/// its header rows and first row, or the chain of rows that row keeps with (they move together),
+/// and the border below the last of them. List numbers, equation numbers and fields are left
+/// unused.
+pub(crate) fn kept_table_start(ctx: &mut Ctx, t: &wordcraft_doc::Table, block: usize, width: f32, counters: &Counters) -> f32 {
+    let saved = (std::mem::replace(&mut ctx.counters, counters.clone()), ctx.fields.clone(), ctx.eq_count, ctx.boxes.clone());
+    let tl = table::layout_table(ctx, StoryRef::Body, t, &[block as u32], width, 1);
+    (ctx.counters, ctx.fields, ctx.eq_count, ctx.boxes) = saved;
+    let headers = t.rows.iter().take_while(|r| r.props.header).count();
+    let end = tl.rows.iter().enumerate().position(|(i, row)| i >= headers && !row_keeps_next(row)).unwrap_or(tl.rows.len().saturating_sub(1));
+    tl.rows.iter().take(end + 1).map(|r| r.height).sum::<f32>() + tl.rows.get(end).map_or(0.0, |r| r.edge)
 }
 
 fn row_keeps_next(row: &table::RowLayout) -> bool {
