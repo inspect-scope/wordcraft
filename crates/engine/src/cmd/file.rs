@@ -112,7 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let opts = export_options(s, v);
             if let Some(map_path) = p::str(v, "anchorMap") {
                 let source_path = s.path.as_ref().map(|path| path.to_string_lossy());
-                if source_path.as_ref().is_some_and(|source| crate::pdf_anchors::same_path(map_path, source)) {
+                if source_path.as_ref().is_some_and(|source| crate::io::same_path(map_path, source)) {
                     return Err(CmdError::Params("The anchor map cannot replace its source document".into()));
                 }
                 crate::pdf_anchors::write(&s.doc, &opts, &path, map_path).map_err(CmdError::Failed)?;

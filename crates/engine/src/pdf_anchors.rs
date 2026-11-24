@@ -18,7 +18,7 @@ const START_PREFIX: &str = "scope_anchor_";
 const END_PREFIX: &str = "scope_anchor_end_";
 
 pub(crate) fn write(doc: &Document, opts: &ExportOptions, pdf_path: &str, map_path: &str) -> Result<(), String> {
-    if same_path(pdf_path, map_path) {
+    if crate::io::same_path(pdf_path, map_path) {
         return Err("The anchor map cannot replace the PDF".into());
     }
     crate::file_access::check_write(pdf_path)?;
@@ -27,17 +27,6 @@ pub(crate) fn write(doc: &Document, opts: &ExportOptions, pdf_path: &str, map_pa
     let json = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
     crate::io::write_file(pdf_path, &pdf)?;
     crate::io::write_file(map_path, &json)
-}
-
-pub(crate) fn same_path(left: &str, right: &str) -> bool {
-    let canonical = |path: &str| {
-        let path = std::path::Path::new(path);
-        std::fs::canonicalize(path).or_else(|_| {
-            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
-            std::fs::canonicalize(parent).map(|parent| parent.join(path.file_name().unwrap_or_default()))
-        })
-    };
-    left == right || matches!((canonical(left), canonical(right)), (Ok(left), Ok(right)) if left == right)
 }
 
 #[derive(Serialize)]

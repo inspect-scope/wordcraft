@@ -452,6 +452,24 @@ fn update_convert_fields(s: &mut Session, rest: &[String], params: &Value) -> Re
     Ok(())
 }
 
+fn anchor_output(rest: &[String], input: &str, output: &str) -> Result<Option<String>, Failure> {
+    let map = arg_value(rest, "--anchor-map");
+    if rest.iter().any(|arg| arg == "--anchor-map") && map.as_ref().is_none_or(|path| path.starts_with("--")) {
+        return Err("--anchor-map requires an output path".into());
+    }
+    if let Some(path) = &map {
+        if rest.iter().any(|arg| arg == "--markup") || arg_value(rest, "--format").is_some() || !output.to_ascii_lowercase().ends_with(".pdf") {
+            return Err("--anchor-map requires PDF output without markup or --format".into());
+        }
+        if path == output || path == input {
+            return Err("--anchor-map must differ from the input and PDF paths".into());
+        }
+        wordcraft_engine::file_access::check_write(path)?;
+        wordcraft_engine::file_access::check_write(output)?;
+    }
+    Ok(map)
+}
+
 fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
     let script_path = script_operand(args);
     let (args, file) = text_args(args)?;
@@ -472,20 +490,7 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             let paths = positionals(&rest, CONVERT_OPTIONS);
             let (i, o) = (paths.first().ok_or_else(missing_argument)?.to_string(), paths.get(1).ok_or_else(missing_argument)?.to_string());
             let markup = rest.iter().any(|a| a == "--markup");
-            let anchor_map = arg_value(&rest, "--anchor-map");
-            if rest.iter().any(|arg| arg == "--anchor-map") && anchor_map.as_ref().is_none_or(|path| path.starts_with("--")) {
-                return Err("--anchor-map requires an output path".into());
-            }
-            if let Some(map) = &anchor_map {
-                if markup || format.is_some() || !o.to_ascii_lowercase().ends_with(".pdf") {
-                    return Err("--anchor-map requires PDF output without markup or --format".into());
-                }
-                if map == &o || map == &i {
-                    return Err("--anchor-map must differ from the input and PDF paths".into());
-                }
-                wordcraft_engine::file_access::check_write(map)?;
-                wordcraft_engine::file_access::check_write(&o)?;
-            }
+            let anchor_map = anchor_output(&rest, &i, &o)?;
             check_toc_options(&rest, &o)?;
             let password = password_from(&rest)?;
             let mut s = open(&i, password.as_deref())?;
