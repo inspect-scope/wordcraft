@@ -110,10 +110,18 @@ pub fn specs() -> Vec<CommandSpec> {
             };
             let path = if path.to_ascii_lowercase().ends_with(".pdf") { path.to_string() } else { format!("{path}.pdf") };
             let opts = export_options(s, v);
-            crate::io::save_path_with(std::path::Path::new(&path), &s.doc, None, &opts).map_err(CmdError::Failed)?;
+            if let Some(map_path) = p::str(v, "anchorMap") {
+                let source_path = s.path.as_ref().map(|path| path.to_string_lossy());
+                if source_path.as_ref().is_some_and(|source| crate::pdf_anchors::same_path(map_path, source)) {
+                    return Err(CmdError::Params("The anchor map cannot replace its source document".into()));
+                }
+                crate::pdf_anchors::write(&s.doc, &opts, &path, map_path).map_err(CmdError::Failed)?;
+            } else {
+                crate::io::save_path_with(std::path::Path::new(&path), &s.doc, None, &opts).map_err(CmdError::Failed)?;
+            }
             Ok(json!({"path": path, "markup": opts.markup}))
         })
-        .params(r#"{"path": string, "markup"?: bool (Print Markup: tracked changes marked up and each page scaled down beside the comments in balloons; default file.printMarkup)}"#)
+        .params(r#"{"path": string, "markup"?: bool (Print Markup: tracked changes marked up and each page scaled down beside the comments in balloons; default file.printMarkup), "anchorMap"?: string (Scope bookmark geometry from the same final layout, without markup)}"#)
         .pure(),
         CommandSpec::new("file.exportPng", "Export Page as PNG", "File › Export", export_png)
             .params(r#"{"path": string, "page"?: n (1-based), "scale"?: px per pt, "markup"?: bool (the page with its comments in balloons beside it; default file.printMarkup)}"#)

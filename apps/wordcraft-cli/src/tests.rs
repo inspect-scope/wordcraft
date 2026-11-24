@@ -86,6 +86,49 @@ fn toc_refresh_requires_pdf() {
 }
 
 #[test]
+fn anchor_map_requires_plain_pdf() {
+    for values in [
+        vec!["convert", "missing.docx", "out.pdf", "--anchor-map"],
+        vec!["convert", "missing.docx", "out.docx", "--anchor-map", "map.json"],
+        vec!["convert", "missing.docx", "out.pdf", "--anchor-map", "map.json", "--markup"],
+    ] {
+        assert!(run(&args(&values)).is_err_and(|error| error.to_string().contains("--anchor-map requires")));
+    }
+}
+
+#[test]
+fn anchor_export_keeps_pdf_bytes() {
+    verify_anchor_export("The exact saved signature");
+    verify_anchor_export("");
+}
+
+fn verify_anchor_export(text: &str) {
+    use wordcraft_doc::{CharProps, Document, InlineObject, Pos};
+    let directory = std::env::temp_dir().join(format!("wc-cli-anchor-test-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.docx");
+    let pdf = directory.join("report.pdf");
+    let plain = directory.join("plain.pdf");
+    let map = directory.join("anchors.json");
+    let mut document = Document::from_text(text);
+    document.insert_object(&Pos::body(0, 0), InlineObject::BookmarkStart { name: "scope_anchor_0".into() }, &CharProps::default()).unwrap();
+    let len = document.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().len();
+    document.insert_object(&Pos::body(0, len), InlineObject::BookmarkStart { name: "scope_anchor_end_0".into() }, &CharProps::default()).unwrap();
+    let bytes = wordcraft_engine::io::save_bytes("source.docx", &document).unwrap();
+    std::fs::write(&source, &bytes).unwrap();
+    run(&args(&["convert", &source.to_string_lossy(), &pdf.to_string_lossy(), "--anchor-map", &map.to_string_lossy()])).unwrap();
+    run(&args(&["convert", &source.to_string_lossy(), &plain.to_string_lossy()])).unwrap();
+    assert_eq!(std::fs::read(&pdf).unwrap(), std::fs::read(&plain).unwrap());
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    let anchors: Value = serde_json::from_slice(&std::fs::read(&map).unwrap()).unwrap();
+    assert_eq!(anchors["anchors"][0]["name"], "scope_anchor_0");
+    assert_eq!(anchors["anchors"][0]["page"], 0);
+    assert!(run(&args(&["convert", &source.to_string_lossy(), &pdf.to_string_lossy(), "--anchor-map", &source.to_string_lossy()])).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn protected_refresh_is_skipped() {
     let mut doc = wordcraft_doc::Document::from_text("Cached contents");
     doc.settings.protection = Some("readOnly".into());
