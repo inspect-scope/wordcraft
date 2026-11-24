@@ -159,3 +159,19 @@ The print-time cross-reference follow-up #2612 is not integrated here.
 Local gates encounter the reproduced upstream justified-line and two
 colour-emoji environment failures. Those tests are unchanged. No customer
 documents, Word/Adobe exports or proprietary fonts are included here.
+
+## Saved report anchors
+
+`wordcraft-cli convert saved.docx preview.pdf --anchor-map anchors.json` exports
+Scope bookmark ranges from the same final print layout as the PDF. Ordinary
+conversion is unchanged. `--refresh-toc` and `--update-fields` retain their
+existing behavior; markup cannot be combined with an anchor map.
+
+Each `scope_anchor_N` start marker pairs with `scope_anchor_end_N`. The JSON
+contains `schemaVersion: 1`, page dimensions and named anchors with per-page
+rectangles. Page indexes start at zero; coordinates are points from the top left.
+Empty fields keep a caret destination. Duplicate, missing and reversed pairs are
+unmapped. Page sizes outside the PDF writer's supported range are refused.
+
+The source DOCX is never rewritten. Marker IDs map to report entities outside
+the renderer; no report data is reconstructed during export.

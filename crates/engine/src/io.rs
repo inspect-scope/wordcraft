@@ -129,6 +129,18 @@ pub(crate) fn canonical(_path: &std::path::Path) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Compare existing files or not-yet-created paths without reading their content.
+pub(crate) fn same_path(left: &str, right: &str) -> bool {
+    let canonical = |path: &str| {
+        let path = std::path::Path::new(path);
+        std::fs::canonicalize(path).or_else(|_| {
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+            std::fs::canonicalize(parent).map(|parent| parent.join(path.file_name().unwrap_or_default()))
+        })
+    };
+    left == right || matches!((canonical(left), canonical(right)), (Ok(left), Ok(right)) if left == right)
+}
+
 /// Can files with this extension be saved with a password (Word's packages)?
 pub fn can_encrypt(name: &str) -> bool {
     is_word_package(&ext_of(name))

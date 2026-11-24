@@ -17,7 +17,7 @@ const USAGE: &str = "\
 wordcraft-cli — WordCraft from the command line
 
 USAGE:
-  wordcraft-cli convert <in> <out> [--markup] [--update-fields | --refresh-toc] [--format wordml2003|flatopc]
+  wordcraft-cli convert <in> <out> [--markup] [--update-fields | --refresh-toc] [--format wordml2003|flatopc] [--anchor-map FILE]
                                               convert between formats (docx, doc [read], pdf, odt, rtf, html, md, tex, txt, json, png,
                                               xml); --update-fields refreshes unlocked fields before saving;
                                               --refresh-toc rebuilds one supported TOC for PDF only;
@@ -26,6 +26,7 @@ USAGE:
                                               --format wordml2003 a Word 2003 XML Document;
                                               --markup (Print Markup): comments beside each page and
                                               tracked changes in pdf/png, a comment list in html/md/txt
+                                              --anchor-map writes Scope bookmark geometry beside a PDF
   wordcraft-cli info <file>                   pages, words, paragraphs, properties (JSON)
   wordcraft-cli text <file>                   plain text
   wordcraft-cli inspect <file>                document structure (JSON)
@@ -313,6 +314,7 @@ const CONVERT_OPTIONS: &[OptionSpec] = &[
     OptionSpec { name: "--format", takes_value: true },
     OptionSpec { name: "--update-fields", takes_value: false },
     OptionSpec { name: "--refresh-toc", takes_value: false },
+    OptionSpec { name: "--anchor-map", takes_value: true },
     OptionSpec { name: "--password", takes_value: true },
     OptionSpec { name: "--password-file", takes_value: true },
 ];
@@ -450,6 +452,24 @@ fn update_convert_fields(s: &mut Session, rest: &[String], params: &Value) -> Re
     Ok(())
 }
 
+fn anchor_output(rest: &[String], input: &str, output: &str) -> Result<Option<String>, Failure> {
+    let map = arg_value(rest, "--anchor-map");
+    if rest.iter().any(|arg| arg == "--anchor-map") && map.as_ref().is_none_or(|path| path.starts_with("--")) {
+        return Err("--anchor-map requires an output path".into());
+    }
+    if let Some(path) = &map {
+        if rest.iter().any(|arg| arg == "--markup") || arg_value(rest, "--format").is_some() || !output.to_ascii_lowercase().ends_with(".pdf") {
+            return Err("--anchor-map requires PDF output without markup or --format".into());
+        }
+        if path == output || path == input {
+            return Err("--anchor-map must differ from the input and PDF paths".into());
+        }
+        wordcraft_engine::file_access::check_write(path)?;
+        wordcraft_engine::file_access::check_write(output)?;
+    }
+    Ok(map)
+}
+
 fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
     let script_path = script_operand(args);
     let (args, file) = text_args(args)?;
@@ -470,10 +490,16 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             let paths = positionals(&rest, CONVERT_OPTIONS);
             let (i, o) = (paths.first().ok_or_else(missing_argument)?.to_string(), paths.get(1).ok_or_else(missing_argument)?.to_string());
             let markup = rest.iter().any(|a| a == "--markup");
+            let anchor_map = anchor_output(&rest, &i, &o)?;
             check_toc_options(&rest, &o)?;
             let password = password_from(&rest)?;
             let mut s = open(&i, password.as_deref())?;
             update_convert_fields(&mut s, &rest, &json!({"forPdf": true, "markup": markup}))?;
+            if let Some(map) = anchor_map {
+                s.run("file.exportPdf", &json!({"path": o, "markup": false, "anchorMap": map})).map_err(|e| e.to_string())?;
+                eprintln!("wrote {o}");
+                return Ok(());
+            }
             let r = if o.to_ascii_lowercase().ends_with(".png") {
                 s.run("file.exportPng", &json!({"path": o, "page": 1, "markup": markup}))
             } else if o.to_ascii_lowercase().ends_with(".pdf") && format.is_none() {

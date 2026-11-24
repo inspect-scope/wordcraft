@@ -17,6 +17,7 @@ pub mod keymap;
 pub(crate) mod locale;
 pub mod math_gallery;
 pub mod packs;
+mod pdf_anchors;
 pub(crate) mod prefs;
 pub mod print;
 mod print_fields;
