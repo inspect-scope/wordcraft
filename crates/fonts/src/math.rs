@@ -1,4 +1,4 @@
-//! The OpenType `MATH` table (constants, italic corrections, accent attachment, glyph size
+//! The OpenType `MATH` table (constants, italic corrections, corner kerning, accent attachment, glyph size
 //! variants and assemblies) read into owned, bounds-checked data, and math font resolution.
 //!
 //! Spec: OpenType 1.9 `MATH` table. Every read is checked; a malformed table yields `None` or
@@ -88,6 +88,25 @@ pub struct Construction {
     pub parts: Vec<GlyphPart>,
 }
 
+/// Corner of a glyph used for height-dependent script kerning.
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum MathCorner {
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
+#[derive(Clone, Debug)]
+struct KernSteps {
+    heights: Vec<f32>,
+    values: Vec<f32>,
+}
+
+const MAX_KERN_HEIGHTS: usize = 256;
+const MAX_KERN_GLYPHS: usize = 4096;
+
 /// A parsed `MATH` table. Values are font units.
 #[derive(Clone, Debug, Default)]
 pub struct MathTable {
@@ -98,6 +117,7 @@ pub struct MathTable {
     values: Vec<f32>,
     pub radical_degree_bottom_raise_percent: f32,
     pub italics: HashMap<u32, f32>,
+    kerns: HashMap<u32, [Option<KernSteps>; 4]>,
     pub top_accent: HashMap<u32, f32>,
     pub min_connector_overlap: f32,
     pub vert: HashMap<u32, Construction>,
@@ -107,6 +127,16 @@ pub struct MathTable {
 impl MathTable {
     pub fn get(&self, c: C) -> f32 {
         self.values.get(c as usize).copied().unwrap_or(0.0)
+    }
+
+    /// Corner kerning at `height` above the glyph baseline, in font units.
+    pub fn kern(&self, gid: u32, corner: MathCorner, height: f32) -> f32 {
+        if !height.is_finite() {
+            return 0.0;
+        }
+        let Some(steps) = self.kerns.get(&gid).and_then(|corners| corners.get(corner as usize)).and_then(Option::as_ref) else { return 0.0 };
+        let index = steps.heights.partition_point(|h| height >= *h);
+        steps.values.get(index).copied().unwrap_or(0.0)
     }
 }
 
@@ -223,6 +253,84 @@ fn constructions(b: &[u8], variants: usize, cov_at: usize, count: usize, offsets
     m
 }
 
+fn kern_steps(b: &[u8], at: usize) -> Option<KernSteps> {
+    let count = u16_at(b, at)? as usize;
+    if count > MAX_KERN_HEIGHTS {
+        return None;
+    }
+    b.get(at..at.checked_add(2 + (2 * count + 1) * 4)?)?;
+    let heights: Vec<f32> = (0..count).map(|i| i16_at(b, at + 2 + i * 4).map(f32::from)).collect::<Option<_>>()?;
+    if heights.windows(2).any(|pair| matches!(pair, [low, high] if low > high)) {
+        return None;
+    }
+    let values = (0..=count).map(|i| i16_at(b, at + 2 + (count + i) * 4).map(f32::from)).collect::<Option<_>>()?;
+    Some(KernSteps { heights, values })
+}
+
+// Validate counts and ranges before expanding untrusted coverage.
+fn kern_coverage(b: &[u8], at: usize, limit: usize) -> Option<Vec<u32>> {
+    if limit > MAX_KERN_GLYPHS {
+        return None;
+    }
+    let mut out = Vec::new();
+    if limit == 0 {
+        return Some(out);
+    }
+    let count = u16_at(b, at + 2)? as usize;
+    match u16_at(b, at)? {
+        1 => {
+            if count != limit {
+                return None;
+            }
+            for i in 0..count {
+                let glyph = u16_at(b, at + 4 + i * 2)? as u32;
+                if out.last().is_some_and(|last| glyph <= *last) {
+                    return None;
+                }
+                out.push(glyph);
+            }
+        }
+        2 => {
+            if count > limit {
+                return None;
+            }
+            let mut previous = None;
+            for i in 0..count {
+                let r = at + 4 + i * 6;
+                let start = u16_at(b, r)?;
+                let end = u16_at(b, r + 2)?;
+                let index = u16_at(b, r + 4)? as usize;
+                if end < start || index != out.len() || previous.is_some_and(|last| start <= last) {
+                    return None;
+                }
+                let len = usize::from(end - start) + 1;
+                if len > limit - out.len() {
+                    return None;
+                }
+                // Disjoint ranges expand to at most the declared, capped glyph count.
+                out.extend((start..=end).map(u32::from));
+                previous = Some(end);
+            }
+        }
+        _ => return None,
+    }
+    (out.len() == limit).then_some(out)
+}
+
+fn kern_map(b: &[u8], at: usize) -> HashMap<u32, [Option<KernSteps>; 4]> {
+    let mut out = HashMap::new();
+    let count = u16_at(b, at + 2).unwrap_or(0) as usize;
+    if count == 0 || count > MAX_KERN_GLYPHS {
+        return out;
+    }
+    let Some(cov) = sub(b, at, at) else { return out };
+    for (i, gid) in kern_coverage(b, cov, count).unwrap_or_default().into_iter().enumerate() {
+        let corners = std::array::from_fn(|corner| sub(b, at, at + 4 + i * 8 + corner * 2).and_then(|offset| kern_steps(b, offset)));
+        out.insert(gid, corners);
+    }
+    out
+}
+
 /// Parse a `MATH` table.
 pub fn parse(b: &[u8]) -> Option<MathTable> {
     if u16_at(b, 0)? != 1 {
@@ -245,6 +353,9 @@ pub fn parse(b: &[u8]) -> Option<MathTable> {
         if let Some(ta) = sub(b, gi, gi + 2) {
             t.top_accent = value_map(b, ta);
         }
+        if let Some(ki) = sub(b, gi, gi + 6) {
+            t.kerns = kern_map(b, ki);
+        }
     }
     if let Some(v) = sub(b, 0, 8) {
         t.min_connector_overlap = u16_at(b, v).unwrap_or(0) as f32;
@@ -260,7 +371,7 @@ pub fn parse(b: &[u8]) -> Option<MathTable> {
 pub fn table(face: &FontFace) -> Option<Arc<MathTable>> {
     static CACHE: OnceLock<Mutex<HashMap<u32, Option<Arc<MathTable>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(t) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&face.id()) {
+    if let Some(t) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&face.id()) {
         return t.clone();
     }
     let t = face
@@ -268,7 +379,7 @@ pub fn table(face: &FontFace) -> Option<Arc<MathTable>> {
         .and_then(|f| f.table_data(skrifa::raw::types::Tag::new(b"MATH")).map(|d| d.as_bytes().to_vec()))
         .and_then(|bytes| parse(&bytes))
         .map(Arc::new);
-    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(face.id(), t.clone());
+    cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(face.id(), t.clone());
     t
 }
 
@@ -299,15 +410,35 @@ pub const MATH_SUBSTITUTES: &[&str] = &[
     "Noto Sans Math",
 ];
 
+const MATH_CACHE_MAX: usize = 1024;
+
+/// Math names longer than this (bytes) are resolved but never remembered.
+const MATH_KEY_MAX: usize = 256;
+
+/// Resolutions tagged with the [`FontDb::generation`] they were made at.
+type MathMemo = (u64, HashMap<String, (FaceRef, Option<Arc<MathTable>>)>);
+
+fn math_cache() -> &'static Mutex<MathMemo> {
+    static CACHE: OnceLock<Mutex<MathMemo>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new((0, HashMap::new())))
+}
+
 /// The face to set math in: `family` when installed and it has a `MATH` table, else the first
 /// installed substitute that has one, else `family` (or its text substitute) without one.
+/// Remembered until user fonts are added or removed ([`FontDb::generation`]).
 pub fn resolve_math(family: &str) -> (FaceRef, Option<Arc<MathTable>>) {
-    static CACHE: OnceLock<Mutex<HashMap<String, (FaceRef, Option<Arc<MathTable>>)>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(family) {
-        return v.clone();
-    }
+    let cache = math_cache();
     let db = FontDb::global();
+    let generation = db.generation();
+    {
+        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if c.0 != generation {
+            *c = (generation, HashMap::new());
+        }
+        if let Some(v) = c.1.get(family) {
+            return v.clone();
+        }
+    }
     let mut found = None;
     for fam in std::iter::once(family).chain(MATH_SUBSTITUTES.iter().copied()) {
         if !db.has_family(fam) {
@@ -322,13 +453,202 @@ pub fn resolve_math(family: &str) -> (FaceRef, Option<Arc<MathTable>>) {
         }
     }
     let v = found.unwrap_or_else(|| (crate::word::resolve(family, false, false).face, None));
-    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(family.to_string(), v.clone());
+    if family.len() <= MATH_KEY_MAX {
+        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if c.0 == generation {
+            if c.1.len() >= MATH_CACHE_MAX {
+                c.1.clear();
+            }
+            c.1.insert(family.to_string(), v.clone());
+        }
+    }
     v
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cached(family: &str) -> bool {
+        math_cache().lock().unwrap_or_else(|e| e.into_inner()).1.contains_key(family)
+    }
+
+    /// `font` (an sfnt) with a minimal valid `MATH` table added: enough for `parse` to accept.
+    fn with_math_table(font: &[u8]) -> Vec<u8> {
+        let n = u16::from_be_bytes([font[4], font[5]]) as usize;
+        let mut dir: Vec<[u8; 16]> = (0..n).map(|i| font[12 + i * 16..28 + i * 16].try_into().unwrap()).collect();
+        let mut math = vec![0u8, 1, 0, 0, 0, 10, 0, 0, 0, 0];
+        math.resize(10 + 8 + VALUE_COUNT * 4 + 2, 0);
+        let data_start = 12 + (n + 1) * 16;
+        let end = font.len() + 16;
+        for e in &mut dir {
+            let off = u32::from_be_bytes([e[8], e[9], e[10], e[11]]) + 16;
+            e[8..12].copy_from_slice(&off.to_be_bytes());
+        }
+        let mut entry = [0u8; 16];
+        entry[..4].copy_from_slice(b"MATH");
+        entry[8..12].copy_from_slice(&(end as u32).to_be_bytes());
+        entry[12..16].copy_from_slice(&(math.len() as u32).to_be_bytes());
+        let at = dir.iter().position(|e| e[..4] > entry[..4]).unwrap_or(dir.len());
+        dir.insert(at, entry);
+        let mut out = font[..12].to_vec();
+        out[4..6].copy_from_slice(&((n + 1) as u16).to_be_bytes());
+        // Search fields are only hints for lookups; skrifa binary-searches the directory, so
+        // keep them consistent.
+        let entry_selector = (usize::BITS - 1 - (n + 1).leading_zeros()) as u16;
+        let search_range = (1u16 << entry_selector) * 16;
+        out[6..8].copy_from_slice(&search_range.to_be_bytes());
+        out[8..10].copy_from_slice(&entry_selector.to_be_bytes());
+        out[10..12].copy_from_slice(&(((n + 1) as u16) * 16 - search_range).to_be_bytes());
+        for e in &dir {
+            out.extend_from_slice(e);
+        }
+        debug_assert_eq!(out.len(), data_start);
+        out.extend_from_slice(&font[12 + n * 16..]);
+        out.extend_from_slice(&math);
+        out
+    }
+
+    #[test]
+    fn math_resolution_follows_installed_and_removed_fonts() {
+        use crate::fontdb::user::tests::renamed;
+        // 13 characters, as `renamed` requires.
+        let fam = "Zz Math Gen 1";
+        let db = FontDb::global();
+        assert_ne!(resolve_math(fam).0.family, fam);
+        let font = with_math_table(&renamed("SourceSans3-Regular.ttf", fam));
+        db.install_font("ZzMathGen.ttf", &font).unwrap();
+        let (face, table) = resolve_math(fam);
+        assert_eq!(face.family, fam, "a math font added after the first lookup must be used");
+        assert!(table.is_some());
+        db.remove_user_font(fam).unwrap();
+        assert_ne!(resolve_math(fam).0.family, fam, "a removed font must stop being used");
+    }
+
+    #[test]
+    fn math_cache_stays_bounded() {
+        for i in 0..(MATH_CACHE_MAX + 50) {
+            let _ = resolve_math(&format!("Zz Bound Probe {i}"));
+        }
+        assert!(math_cache().lock().unwrap_or_else(|e| e.into_inner()).1.len() <= MATH_CACHE_MAX);
+        let long = "L".repeat(10_000);
+        let _ = resolve_math(&long);
+        assert!(!cached(&long), "absurdly long names must not be cached");
+    }
+
+    #[test]
+    fn height_kerns_are_bounded() {
+        let mut bytes = vec![0u8; 22];
+        bytes[..2].copy_from_slice(&2u16.to_be_bytes());
+        for (i, value) in [0i16, 300, -100, -300, 50].into_iter().enumerate() {
+            let at = 2 + i * 4;
+            bytes[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        let mut corners = std::array::from_fn(|_| None);
+        corners[MathCorner::BottomRight as usize] = kern_steps(&bytes, 0);
+        let mut table = MathTable::default();
+        table.kerns.insert(7, corners);
+        for (height, expected) in [(-1.0, -100.0), (0.0, -300.0), (299.0, -300.0), (300.0, 50.0), (10000.0, 50.0)] {
+            assert_eq!(table.kern(7, MathCorner::BottomRight, height), expected);
+        }
+        assert_eq!(table.kern(7, MathCorner::TopLeft, 0.0), 0.0);
+        assert_eq!(table.kern(8, MathCorner::BottomRight, 0.0), 0.0);
+        for height in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(table.kern(7, MathCorner::BottomRight, height), 0.0);
+        }
+        for len in 0..bytes.len() {
+            assert!(kern_steps(&bytes[..len], 0).is_none());
+        }
+        bytes[2..4].copy_from_slice(&301i16.to_be_bytes());
+        assert!(kern_steps(&bytes, 0).is_none(), "descending heights are ignored");
+        bytes[..2].copy_from_slice(&((MAX_KERN_HEIGHTS + 1) as u16).to_be_bytes());
+        assert!(kern_steps(&bytes, 0).is_none(), "hostile counts are bounded");
+    }
+
+    fn coverage_bytes(format: u16, records: &[u16]) -> Vec<u8> {
+        std::iter::once(format).chain(records.iter().copied()).flat_map(u16::to_be_bytes).collect()
+    }
+
+    #[test]
+    fn kern_coverage_bounds_ranges() {
+        let bytes = coverage_bytes(2, &[1, 0, (MAX_KERN_GLYPHS - 1) as u16, 0]);
+        let glyphs = kern_coverage(&bytes, 0, MAX_KERN_GLYPHS).unwrap();
+        assert_eq!(glyphs.len(), MAX_KERN_GLYPHS);
+        assert_eq!(glyphs.first(), Some(&0));
+        assert_eq!(glyphs.last(), Some(&((MAX_KERN_GLYPHS - 1) as u32)));
+        assert!(kern_coverage(&bytes, 0, usize::MAX).is_none());
+        assert_eq!(kern_coverage(&bytes, 0, 0), Some(vec![]));
+        let bytes = coverage_bytes(2, &[u16::MAX, 0, u16::MAX, 0]);
+        assert!(kern_coverage(&bytes, 0, MAX_KERN_GLYPHS).is_none());
+
+        let bytes = coverage_bytes(1, &[3, 11, 12, 13]);
+        assert_eq!(kern_coverage(&bytes, 0, 3), Some(vec![11, 12, 13]));
+        let bytes = coverage_bytes(2, &[2, 7, 8, 0, 12, 14, 2]);
+        assert_eq!(kern_coverage(&bytes, 0, 5), Some(vec![7, 8, 12, 13, 14]));
+        assert!(kern_coverage(&bytes, 0, 3).is_none());
+    }
+
+    #[test]
+    fn kern_coverage_rejects_ranges() {
+        for records in [
+            vec![1, 7, 8, u16::MAX],     // Sparse coverage index.
+            vec![2, 7, 8, 0, 8, 9, 2],   // Overlapping glyph ranges.
+            vec![2, 7, 8, 0, 12, 13, 0], // Repeated coverage index.
+            vec![1, 8, 7, 0],            // Reversed range.
+            vec![1, 7, 8],               // Truncated range.
+        ] {
+            let bytes = coverage_bytes(2, &records);
+            assert!(kern_coverage(&bytes, 0, 8).is_none(), "{records:?}");
+        }
+    }
+
+    fn kern_math_bytes(count: u16, coverage: &[u8]) -> Vec<u8> {
+        const GLYPH_INFO: usize = 256;
+        const KERN_INFO: usize = GLYPH_INFO + 8;
+        let cov = KERN_INFO + 4 + count as usize * 8;
+        let mut bytes = vec![0; cov + coverage.len()];
+        let mut put = |at, value: u16| bytes[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        put(0, 1);
+        put(4, 10);
+        put(6, GLYPH_INFO as u16);
+        put(GLYPH_INFO + 6, 8);
+        put(KERN_INFO, (cov - KERN_INFO) as u16);
+        put(KERN_INFO + 2, count);
+        bytes[cov..].copy_from_slice(coverage);
+        bytes
+    }
+
+    #[test]
+    fn kern_parse_rejects_ranges() {
+        for (count, format, records) in [
+            (1, 2, vec![2, 7, 7, 0, 8, 8, 1]),   // Too many ranges.
+            (3, 2, vec![1, 7, 8, 0]),            // Too few glyphs.
+            (1, 2, vec![1, 7, 8, 0]),            // Too many glyphs.
+            (3, 1, vec![2, 7, 8]),               // Glyph count mismatch.
+            (4, 2, vec![2, 7, 8, 0, 8, 9, 2]),   // Overlap.
+            (4, 2, vec![2, 7, 8, 0, 12, 13, 0]), // Index mismatch.
+        ] {
+            let coverage = coverage_bytes(format, &records);
+            let table = parse(&kern_math_bytes(count, &coverage)).unwrap();
+            assert!(table.kerns.is_empty(), "{count}: {records:?}");
+        }
+    }
+
+    #[test]
+    fn parse_hostile_kern_ranges() {
+        let records: Vec<u16> = std::iter::once(u16::MAX).chain((0..u16::MAX).flat_map(|_| [0, u16::MAX, 0])).collect();
+        let coverage = coverage_bytes(2, &records);
+        for count in [0, 1, (MAX_KERN_GLYPHS + 1) as u16] {
+            let bytes = kern_math_bytes(count, &coverage);
+            let table = parse(&bytes).unwrap();
+            assert!(table.kerns.is_empty());
+        }
+        let coverage = coverage_bytes(2, &[2, 7, 8, 0, 12, 12, 2]);
+        let table = parse(&kern_math_bytes(3, &coverage)).unwrap();
+        let mut glyphs: Vec<_> = table.kerns.keys().copied().collect();
+        glyphs.sort_unstable();
+        assert_eq!(glyphs, [7, 8, 12]);
+    }
 
     #[test]
     fn garbage_tables_never_panic() {

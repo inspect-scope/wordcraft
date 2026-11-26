@@ -124,6 +124,7 @@ fn plain_chars(c: &CharProps) -> CharProps {
         rtl: c.rtl,
         cs: c.cs,
         lang_bidi: c.lang_bidi.clone(),
+        lang_ea: c.lang_ea.clone(),
         link: c.link.clone(),
         ins: c.ins,
         del: c.del,
@@ -168,13 +169,16 @@ pub(crate) fn symbol_items(pl: &Arc<ParaLayout>, x: f32, y: f32, level: u8, chil
     let disc = |r: f32| Placed::Shape {
         rect: Rect::new(cx - r, cy - r, r * 2.0, r * 2.0),
         kind: ShapeKind::Ellipse,
-        fill: Some(SYMBOL_GREY),
+        fill: Some(wordcraft_doc::fill::Fill::solid(SYMBOL_GREY)),
         stroke: None,
         stroke_width: 0.0,
         freeform: None,
         effects: Default::default(),
         spin: Default::default(),
         extra: Default::default(),
+        // A heading's symbol, not an object of its own: never left out of a page.
+        object: None,
+        alt: String::new(),
     };
     let white = Border { style: BorderStyle::Single, width: 1.1, color: Some(Rgb(0xFF, 0xFF, 0xFF)), space: 0.0 };
     if level >= BODY {
@@ -183,9 +187,9 @@ pub(crate) fn symbol_items(pl: &Arc<ParaLayout>, x: f32, y: f32, level: u8, chil
     }
     let r = 4.6;
     out.push(disc(r));
-    out.push(Placed::Rule { x0: cx - 2.6, y0: cy, x1: cx + 2.6, y1: cy, border: white });
+    out.push(Placed::Rule { x0: cx - 2.6, y0: cy, x1: cx + 2.6, y1: cy, border: white, source: None });
     if children {
-        out.push(Placed::Rule { x0: cx, y0: cy - 2.6, x1: cx, y1: cy + 2.6, border: white });
+        out.push(Placed::Rule { x0: cx, y0: cy - 2.6, x1: cx, y1: cy + 2.6, border: white, source: None });
     }
     if collapsed {
         let w = first.xs.last().copied().unwrap_or(0.0).max(12.0);
@@ -196,6 +200,7 @@ pub(crate) fn symbol_items(pl: &Arc<ParaLayout>, x: f32, y: f32, level: u8, chil
             x1: x + w,
             y1: by,
             border: Border { style: BorderStyle::Wave, width: 0.75, color: Some(SYMBOL_GREY), space: 0.0 },
+            source: None,
         });
     }
     out
