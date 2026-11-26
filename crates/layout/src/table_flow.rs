@@ -364,6 +364,9 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
             ));
         }
         obstacles.extend_from_slice(&pb.float_tables);
+        if !f.overlap {
+            obstacles.extend(pb.wrap_areas().into_iter().filter(|(.., table)| !table).map(|(r, ..)| r));
+        }
         let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &obstacles);
         // Like Word, a table that doesn't fit below the text before it moves to the next page with
         // its anchor: one placed relative to the paragraph when it would run off the page, one

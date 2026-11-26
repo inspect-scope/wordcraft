@@ -5965,6 +5965,57 @@ fn a_floating_table_ignores_a_paragraphs_empty_lines() {
     );
 }
 
+/// SCO-2667: a document with a tightly-wrapped body drawing anchored to a paragraph, followed
+/// by a floating table centred on the margin whose initial area would land on top of it
+/// (`overlap` controls `w:tblOverlap`).
+fn doc_with_floating_table_over_a_tight_wrapped_drawing(overlap: bool) -> Document {
+    use wordcraft_doc::para::{Anchor as FloatAnchor, Float, FloatAlign, Wrap};
+    use wordcraft_doc::props::TableFloat;
+    let mut d = Document::from_text("Anchor paragraph for the drawing.\nAfter the table.");
+    let drawing = Float { wrap: Wrap::Tight, h_rel: FloatAnchor::Column, v_rel: FloatAnchor::Paragraph, y: 14.2, ..Default::default() };
+    if let Some(wordcraft_doc::Block::Para(p)) = d.body.get_mut(0).map(std::sync::Arc::make_mut) {
+        p.insert_object(0, rect_shape(300.0, 216.0, drawing), &Default::default()).unwrap();
+    }
+    let mut t = Table::new(1, 1, 200.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("Table", Default::default()))];
+    t.props.float = Some(TableFloat {
+        h_rel: Anchor::Margin,
+        v_rel: Anchor::Paragraph,
+        h_align: Some(FloatAlign::Center),
+        y: -0.65,
+        overlap,
+        ..Default::default()
+    });
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    d
+}
+
+fn placed_cell_rect(items: &[Placed]) -> Rect {
+    items.iter().find_map(|i| if let Placed::Cell { rect, .. } = i { Some(*rect) } else { None }).unwrap()
+}
+
+#[test]
+fn a_floating_table_moves_clear_of_a_tightly_wrapped_drawing_when_overlap_is_never() {
+    let d = doc_with_floating_table_over_a_tight_wrapped_drawing(false);
+    let l = lay(&d);
+    let drawing_rect = shapes(&l.pages[0].items)[0];
+    let cell_rect = placed_cell_rect(&l.pages[0].items);
+    assert_eq!(l.pages.len(), 1, "fits on one page");
+    assert!(cell_rect.y >= drawing_rect.bottom() - 0.01, "table cell at {cell_rect:?} overlaps the drawing ending at {}", drawing_rect.bottom());
+    assert!(!cell_rect.intersects(&drawing_rect), "table cell {cell_rect:?} intersects the drawing {drawing_rect:?}");
+}
+
+/// Control: `w:tblOverlap="overlap"` (the default) keeps the table at its own requested
+/// position even though it covers the drawing, same as before the fix.
+#[test]
+fn a_floating_table_may_overlap_a_drawing_when_overlap_is_allowed() {
+    let d = doc_with_floating_table_over_a_tight_wrapped_drawing(true);
+    let l = lay(&d);
+    let drawing_rect = shapes(&l.pages[0].items)[0];
+    let cell_rect = placed_cell_rect(&l.pages[0].items);
+    assert!(cell_rect.intersects(&drawing_rect), "overlap=true table {cell_rect:?} should keep its position over {drawing_rect:?}");
+}
+
 #[test]
 fn a_floating_table_taller_than_a_page_runs_across_pages() {
     use wordcraft_doc::para::Anchor;
