@@ -1100,20 +1100,24 @@ fn box_float_table_rect(
     // Nor is there an area to align in: the table starts where the text is.
     let v_align = if frame.is_none() && matches!(f.v_rel, Anchor::Page | Anchor::Margin) { None } else { f.v_align };
     let x = align_in(h_area, f.x, w, f.h_align) - if f.h_align.is_none() { legacy } else { 0.0 };
-    let r = clear_of_float_tables(Rect::new(x, align_in(v_area, y_off, h, v_align), w, h), f, legacy, h_area.0, float_tables);
+    let r = clear_of_float_tables(Rect::new(x, align_in(v_area, y_off, h, v_align), w, h), f, legacy, h_area.0, float_tables.iter().copied());
     let [dl, dt, dr, db] = f.dist_from_text();
     (r, r.inset(-dl, -dt, -dr, -db))
 }
 
-/// Floating table `f` at `r`, moved below the floating tables in its way when it may not
-/// overlap them. In Word 2013+ layout one placed by an offset keeps its distance from the text's
-/// left edge (`text_left`).
-fn clear_of_float_tables(mut r: Rect, f: &TableFloat, legacy: f32, text_left: f32, others: &[Rect]) -> Rect {
+/// Floating table `f` at `r`, moved below the floats in its way (`others`: other floating
+/// tables, and at the body level, floating objects too) when it may not overlap them. In Word
+/// 2013+ layout one placed by an offset keeps its distance from the text's left edge
+/// (`text_left`).
+fn clear_of_float_tables(mut r: Rect, f: &TableFloat, legacy: f32, text_left: f32, others: impl Iterator<Item = Rect> + Clone) -> Rect {
+    if f.overlap {
+        return r;
+    }
     let [dl, dt, dr, db] = f.dist_from_text();
     let keeps_text_distance = legacy == 0.0 && f.h_align.is_none() && f.x >= 0.0 && matches!(f.h_rel, Anchor::Margin | Anchor::Column);
     for _ in 0..64 {
         let area = r.inset(-dl, -dt, -dr, -db);
-        let Some(below) = others.iter().filter(|o| !f.overlap && o.intersects(&area)).map(|o| o.bottom()).reduce(f32::max) else { break };
+        let Some(below) = others.clone().filter(|o| o.intersects(&area)).map(|o| o.bottom()).reduce(f32::max) else { break };
         r.y = below + dt;
         if keeps_text_distance {
             r.x = r.x.max(text_left + dl);
@@ -1246,10 +1250,9 @@ struct PageBuilder<'a> {
     /// The previous paragraph ended with a page break (its mark stayed with the break): the next
     /// paragraph, first on the new page, gets no space before (Word).
     after_break_mark: bool,
-    /// Wrap areas of floating objects on this page (see [`wrap_area`]).
+    /// Wrap areas of floating objects on this page (see [`wrap_area`]), including those of
+    /// floating tables already placed (which a later one may need to clear, like other floats).
     excl: Vec<WrapArea>,
-    /// Wrap areas of the floating tables on this page, which others may not overlap.
-    float_tables: Vec<Rect>,
     /// Line numbering counter.
     line_no: u32,
     /// Index of the first body item of the current page (vertical alignment shifts from here).
@@ -1611,7 +1614,6 @@ impl PageBuilder<'_> {
         self.flush_notes();
         self.beneath = self.sect_beneath;
         self.excl.clear();
-        self.float_tables.clear();
         if self.sect.line_numbers.as_ref().is_some_and(|l| l.restart == wordcraft_doc::section::LineNumberRestart::Page) {
             self.line_no = 0;
         }
@@ -1841,7 +1843,6 @@ fn layout_pass(
         prev: None,
         after_break_mark: false,
         excl: Vec::new(),
-        float_tables: Vec::new(),
         line_no: 0,
         page_items_start: 0,
         seps: NoteSeps::default(),
@@ -3209,7 +3210,7 @@ fn place_floating_table(pb: &mut PageBuilder, tl: &table::TableLayout, f: &Table
             _ => (pb.y, 0.0),
         };
         let x = float_table_x(pb, w, f, legacy);
-        let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &pb.float_tables);
+        let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, pb.excl.iter().map(|(r, ..)| *r));
         // Like Word, a table that doesn't fit below the text before it moves to the next page with
         // its anchor: one placed relative to the paragraph when it would run off the page, one
         // placed on the page or margin when it would also cover the text already on the page.
@@ -3236,7 +3237,6 @@ fn place_floating_table(pb: &mut PageBuilder, tl: &table::TableLayout, f: &Table
         }
         let area = r.inset(-dl, -dt, -dr, -db);
         pb.excl.push((area, false, None, WrapText::BothSides));
-        pb.float_tables.push(area);
         return;
     }
 }
