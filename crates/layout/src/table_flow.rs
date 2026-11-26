@@ -151,7 +151,7 @@ pub(crate) fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc
         // own left edge.
         tl.x = float_table_x(pb, tl.width, &f, legacy, ctx.mirror) - pb.col_x();
     }
-    if !pb.at_top() && !pb.web && tl.rows.first().is_some_and(|row| first_cell_flag(row, |rp| rp.page_break_before)) {
+    if !pb.fresh() && !pb.web && tl.rows.first().is_some_and(|row| first_cell_flag(row, |rp| rp.page_break_before)) {
         pb.new_page(block, body_top);
     }
     // A table in the text flow starts below the floating objects in its way.
@@ -380,6 +380,7 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
                     if top_bottom { Rect::new(left, r.y, right - left, r.h) } else { r }
                 },
             ));
+            obstacles.extend(pb.excl.iter().filter(|(.., table)| !table).map(|(r, ..)| *r));
         }
         obstacles.extend_from_slice(&pb.float_tables);
         let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &obstacles);

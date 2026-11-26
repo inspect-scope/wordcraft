@@ -630,10 +630,18 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>, tabs: &[(String, V
 /// entry text itself has no tab, Clear stops for the left, centre and decimal stops its style
 /// sets before that. Those stops are for a number set off by a tab (`1.1<tab>Title`); with the
 /// number set off by a space, or no number, a short entry's page tab would stop at one of them
-/// (without the leader), and so would the tab on the last line of an entry that wraps.
+/// (without the leader), and so would the tab on the last line of an entry that wraps. When the
+/// entry's first line hangs, the number's tab stops at the left indent, so cached left, centre
+/// and decimal stops past it are dropped: a short title's page tab would stop there.
 fn entry_tabs(s: &Session, props: &wordcraft_doc::ParaProps, text: &str, right: TabStop) -> Vec<TabStop> {
+    let para = s.doc.styles.resolve_para(props);
+    let hanging = (para.indent_first < 0.0).then_some(para.indent_left);
     let mut tabs = props.tabs.clone().unwrap_or_default();
-    tabs.retain(|t| t.pos < right.pos - 0.5 && !matches!(t.align, TabAlign::Right | TabAlign::Bar));
+    tabs.retain(|t| {
+        t.pos < right.pos - 0.5
+            && !matches!(t.align, TabAlign::Right | TabAlign::Bar)
+            && (t.align == TabAlign::Clear || hanging.is_none_or(|left| t.pos <= left + 0.5))
+    });
     if !text.contains('\t') {
         let style = s.doc.styles.resolve_para(&wordcraft_doc::ParaProps { style: props.style.clone(), ..Default::default() });
         for t in style.tabs {

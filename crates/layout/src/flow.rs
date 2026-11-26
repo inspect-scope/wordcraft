@@ -502,7 +502,7 @@ impl<'a> Flow<'a> {
             } else {
                 0.0
             };
-            let over = bottom + tail > limit + 0.01;
+            let over = pl.height > 0.0 && bottom + tail > limit + 0.01;
             let split = bottom > limit + 0.01 && notes_split(pb, (&fit.notes, &line_notes), bottom);
             // Measured in Word: a paragraph of nothing but a page break that can't start on the
             // page moves on and leaves a blank page; a break line within or before text stays.
@@ -834,7 +834,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let mut f = Flow::new(ctx, pb, p, (block, body_top));
     let spot = |pb: &PageBuilder| (pb.pages.len(), pb.col);
     let placed_at = spot(pb);
-    let broke_before = f.pl.rp.page_break_before && !pb.at_top() && !pb.web;
+    let broke_before = f.pl.rp.page_break_before && !pb.fresh() && !pb.web;
     if broke_before {
         pb.new_page(block, body_top);
     }

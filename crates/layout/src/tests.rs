@@ -6038,6 +6038,64 @@ fn a_paragraph_anchored_table_goes_below_a_wrapping_drawing() {
     assert!(cell.y >= shape.bottom() - 0.5, "the table at {} overlaps the drawing ending at {}", cell.y, shape.bottom());
 }
 
+/// SCO-2667: a document with a tightly-wrapped body drawing anchored to a paragraph, followed
+/// by a floating table centred on the margin whose initial area would land on top of it.
+/// `overlap` controls `w:tblOverlap`.
+fn doc_with_floating_table_over_a_tight_wrapped_drawing(overlap: bool) -> Document {
+    use wordcraft_doc::para::{Anchor as FloatAnchor, Float, FloatAlign, Wrap};
+    use wordcraft_doc::props::TableFloat;
+    let mut d = Document::from_text("Anchor paragraph for the drawing.\nAfter the table.");
+    let drawing = Float { wrap: Wrap::Tight, h_rel: FloatAnchor::Column, v_rel: FloatAnchor::Paragraph, y: 14.2, ..Default::default() };
+    if let Some(wordcraft_doc::Block::Para(p)) = d.body.get_mut(0).map(std::sync::Arc::make_mut) {
+        p.insert_object(0, rect_shape(300.0, 216.0, drawing), &Default::default()).unwrap();
+    }
+    let mut t = Table::new(1, 1, 200.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("Table", Default::default()))];
+    t.props.float = Some(TableFloat {
+        h_rel: FloatAnchor::Margin,
+        v_rel: FloatAnchor::Paragraph,
+        h_align: Some(FloatAlign::Center),
+        y: -0.65,
+        overlap,
+        ..Default::default()
+    });
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    d
+}
+
+/// SCO-2667: with `overlap=false` (`w:tblOverlap="never"`) the floating table must move below
+/// the tight-wrapped body drawing it would otherwise land on.
+#[test]
+fn a_floating_table_moves_clear_of_a_tightly_wrapped_drawing_when_overlap_is_never() {
+    let d = doc_with_floating_table_over_a_tight_wrapped_drawing(false);
+    let l = lay(&d);
+    let drawing_rect = l.pages[0].items.iter().find_map(|it| if let Placed::Shape { rect, .. } = it { Some(*rect) } else { None }).unwrap();
+    let cell_rect = l.pages[0].items.iter().find_map(|it| if let Placed::Cell { rect, .. } = it { Some(*rect) } else { None }).unwrap();
+    assert_eq!(l.pages.len(), 1, "fits on one page");
+    assert!(cell_rect.y >= drawing_rect.bottom() - 0.01, "table cell at {cell_rect:?} overlaps the drawing ending at {}", drawing_rect.bottom());
+    assert!(!cell_rect.intersects(&drawing_rect), "table cell {cell_rect:?} intersects the drawing {drawing_rect:?}");
+}
+
+/// SCO-2667 control: with `overlap=true` (`w:tblOverlap="overlap"`, the default) the floating
+/// table is allowed to sit over the drawing — it must NOT be pushed below it.
+#[test]
+fn a_floating_table_with_overlap_allowed_may_sit_over_a_body_drawing() {
+    let d = doc_with_floating_table_over_a_tight_wrapped_drawing(true);
+    let l = lay(&d);
+    let drawing_rect = l.pages[0].items.iter().find_map(|it| if let Placed::Shape { rect, .. } = it { Some(*rect) } else { None }).unwrap();
+    let cell_rect = l.pages[0].items.iter().find_map(|it| if let Placed::Cell { rect, .. } = it { Some(*rect) } else { None }).unwrap();
+    // The table must not have been displaced all the way below the drawing.
+    assert!(
+        cell_rect.y < drawing_rect.bottom() - 0.01,
+        "table with overlap=true was incorrectly displaced below the drawing; cell={cell_rect:?} drawing_bottom={}",
+        drawing_rect.bottom()
+    );
+    assert!(
+        cell_rect.intersects(&drawing_rect),
+        "table with overlap=true must actually intersect the drawing; cell={cell_rect:?} drawing={drawing_rect:?}"
+    );
+}
+
 #[test]
 fn a_floating_table_taller_than_a_page_runs_across_pages() {
     use wordcraft_doc::para::Anchor;
@@ -17917,4 +17975,97 @@ fn table_break_keeps_top() {
     let layout = lay(&d);
     assert_eq!(layout.pages.len(), 1);
     assert_eq!(cell_pages(&layout), vec![0]);
+}
+
+/// 9c280813: A continuous section starting mid-page must not suppress a following
+/// page-break-before.  Word Mac: "Cover", empty mark closing a continuous section,
+/// then "Heading" with page break before → "Heading" on page 2.
+#[test]
+fn a_page_break_before_after_a_continuous_mark_starts_a_page() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    let mut d = Document::from_text("Cover\n\nHeading");
+    d.para_mut(StoryRef::Body, &Path::top(1)).unwrap().section =
+        Some(Box::new(SectionProps { start: SectionStart::Continuous, ..Default::default() }));
+    d.para_mut(StoryRef::Body, &Path::top(2)).unwrap().props.page_break_before = Some(true);
+    d.last_section.start = SectionStart::Continuous;
+    assert_eq!(lay(&d).caret(&Pos::body(2, 0)).unwrap().page, 1);
+}
+
+/// A table with page-break-before in its first cell still starts a page after a continuous mark.
+#[test]
+fn a_table_breaking_before_after_a_continuous_mark_starts_a_page() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    let mut mark = Paragraph::with_text("", CharProps::default());
+    mark.section = Some(Box::new(SectionProps { start: SectionStart::Continuous, ..Default::default() }));
+    let mut d = Document::new();
+    d.body = vec![
+        wordcraft_doc::para_block(Paragraph::with_text("Cover", CharProps::default())),
+        wordcraft_doc::para_block(mark),
+        break_table("Heading", TableStart::NewPage),
+    ];
+    d.last_section.start = SectionStart::Continuous;
+    assert_eq!(cell_pages(&lay(&d)), vec![1]);
+}
+
+/// c71a7f11: A deleted paragraph hidden by hide_deleted must collapse to zero height
+/// and must not push a following paragraph onto the next page when the page has
+/// just enough room for the visible paragraph but not for automatic extra leading.
+#[test]
+fn collapsed_after_fitted_line() {
+    use wordcraft_doc::props::LineSpacing;
+    let options = LayoutOptions { hide_deleted: true, ..Default::default() };
+    for multiple in [1.15, 2.0] {
+        let chr = wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(48.0), ..Default::default() };
+        let mut first = Paragraph::with_text("Before", chr.clone());
+        first.props.space_before = Some(0.0);
+        first.props.space_after = Some(0.0);
+        first.props.line_spacing = Some(LineSpacing::Multiple(multiple));
+        let mut d = Document::new();
+        d.body = vec![wordcraft_doc::para_block(first)];
+        let measured = layout(&d, &mut LayoutCache::new(), &options);
+        let para = measured.pages[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, para, .. } => Some(para),
+                _ => None,
+            })
+            .unwrap();
+        let line = &para.lines[0];
+        let text_height = line.baseline - line.top + line.text_desc;
+        assert!(text_height < line.height - 0.1, "fixture needs excess automatic leading");
+        let room = (text_height + line.height) / 2.0;
+        assert!(room > 36.0, "fixture exceeds the minimum body height");
+        d.last_section.margin_top = 20.0;
+        d.last_section.margin_bottom = 20.0;
+        d.last_section.page_h = 40.0 + room;
+        for deleted in [false, true] {
+            let mut next = Paragraph::with_text("Deleted", wordcraft_doc::CharProps { del: deleted.then_some(0), ..chr.clone() });
+            next.mark.del = deleted.then_some(0);
+            next.props.space_before = Some(0.0);
+            next.props.space_after = Some(0.0);
+            d.body.truncate(1);
+            d.body.push(wordcraft_doc::para_block(next));
+            let laid = layout(&d, &mut LayoutCache::new(), &options);
+            if deleted {
+                let hidden = laid
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.items)
+                    .find_map(|item| match item {
+                        Placed::Lines { story: StoryRef::Body, path, para, .. } if *path == Path::top(1) => Some(para),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(hidden.height, 0.0, "deleted paragraph must collapse");
+                assert!(!hidden.lines.is_empty(), "collapsed paragraph retains its caret line");
+                for line in &hidden.lines {
+                    assert_eq!(line.height, 0.0, "collapsed line height");
+                }
+            }
+            let expected = if deleted { 0 } else { 1 };
+            assert_eq!(laid.caret(&Pos::body(1, 0)).unwrap().page, expected, "spacing={multiple}, deleted={deleted}");
+            assert_eq!(laid.pages.len(), expected + 1, "spacing={multiple}, deleted={deleted}");
+        }
+    }
 }
