@@ -1,0 +1,23 @@
+name: INS 2 browser renderer gate
+
+on:
+  push:
+    branches: [venu/wordcraft-ins2-hosted-gate]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      toolchain: "1.99.1"
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      packages: >-
+        pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+        libgtk-3-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers
+      command: |
+        git checkout --detach 23ae4eb713eaf1d19865807bdd480349f1896c5a
+        test "$(git rev-parse HEAD)" = 23ae4eb713eaf1d19865807bdd480349f1896c5a
+        rustc --version
+        cargo xtask ci
